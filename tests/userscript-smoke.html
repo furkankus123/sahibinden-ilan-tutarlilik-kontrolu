@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Smoke test — built userscript</title>
+<style>
+  body { font:14px/1.5 -apple-system,Segoe UI,Arial,sans-serif; margin:0; padding:24px 16px;
+         max-width:900px; margin-inline:auto; background:#fff; color:#1a1a1a; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.lead { color:#666; margin:0 0 20px; }
+  table { border-collapse:collapse; width:100%; }
+  td { border-bottom:1px solid #e2e2e2; padding:10px 8px; }
+  a.classifiedTitle { color:#0b57d0; text-decoration:none; font-weight:600; }
+  #verdict { font:600 15px/1.6 inherit; padding:12px 16px; border-radius:8px; margin:20px 0; white-space:pre-line; }
+  #verdict.ok  { background:#e8f6e8; color:#1d7a1d; }
+  #verdict.bad { background:#ffe6e6; color:#c00; }
+  #verdict.run { background:#f0f0f0; color:#666; }
+
+  /* HOSTILE HOST STYLING — simulates sahibinden's own row rules.
+     Specificity (1,2,1) plus !important beats any class-based rule the
+     extension could write, so this is what a stylesheet-only approach loses
+     to on the real site. The row background must still come out coloured. */
+  #searchResultsTable tr.searchResultsItem td { background-color:#ffffff !important; }
+</style>
+</head>
+<body>
+
+<h1>Smoke test — <code>dist/…user.js</code></h1>
+<p class="lead">
+  Loads the <strong>built userscript</strong> with the GM_* APIs stubbed, to verify the shipped
+  artifact rather than the sources it was built from. Catches build-time breakage such as the
+  inlined stylesheet not surviving as a JS string, and checks both severity tiers render.
+</p>
+
+<div id="verdict" class="run">running… (the real 1.5–4 s queue delays apply, so give it ~20 s)</div>
+
+<table id="searchResultsTable"><tbody>
+  <tr class="searchResultsItem" id="row-paint">
+    <td><a class="classifiedTitle" href="fixtures/ilan-1.html">Hatasız Boyasız 2019 Passat 1.6 TDI</a></td>
+  </tr>
+  <tr class="searchResultsItem" id="row-major">
+    <td><a class="classifiedTitle" href="fixtures/ilan-3.html">Boyasız Değişensiz 2017 Megane Touch</a></td>
+  </tr>
+  <tr class="searchResultsItem" id="row-clean">
+    <td><a class="classifiedTitle" href="fixtures/ilan-2.html">Tramersiz Hatasız 2020 Corolla Hybrid</a></td>
+  </tr>
+</tbody></table>
+
+<script>
+/* ---------------------------------------------------------------------------
+ * Minimal Tampermonkey stubs. The userscript must detect and use these exactly
+ * as it would the real GM APIs.
+ * ------------------------------------------------------------------------ */
+const gmStore = {};
+function GM_getValue(key, fallback) { return key in gmStore ? gmStore[key] : fallback; }
+function GM_setValue(key, value) { gmStore[key] = value; }
+
+let gmRequestCount = 0;
+function GM_xmlhttpRequest(opts) {
+  gmRequestCount++;
+  fetch(opts.url)
+    .then(async (r) => opts.onload({ status: r.status, responseText: await r.text(), finalUrl: r.url }))
+    .catch(() => opts.onerror && opts.onerror());
+}
+</script>
+
+<!-- The artifact under test -->
+<script src="../dist/sahibinden-tutarsizlik-dedektoru.user.js"></script>
+
+<script>
+/* ---------------------------------------------------------------------------
+ * Assertions
+ * ------------------------------------------------------------------------ */
+const $ = (id) => document.getElementById(id);
+const bgOf = (row) => getComputedStyle(row.querySelector('td')).backgroundColor;
+const badgeOf = (row) => row.querySelector('.lid-badge');
+
+function checks() {
+  const paint = $('row-paint'), major = $('row-major'), clean = $('row-clean');
+  const styleTag = $('lid-styles');
+  const pb = badgeOf(paint), mb = badgeOf(major), cb = badgeOf(clean);
+
+  return [
+    ['userscript executed (GM stubs were used)', gmRequestCount > 0],
+    ['injected its own <style id="lid-styles">', !!styleTag],
+    ['inlined CSS survived the build as a string', !!styleTag && styleTag.textContent.includes('.lid-badge')],
+
+    // --- orange tier: paint only ---
+    ['paint row got .lid-paint', paint.classList.contains('lid-paint')],
+    ['…and NOT the red .lid-inconsistent', !paint.classList.contains('lid-inconsistent')],
+    ['…and renders orange DESPITE the host page forcing white', bgOf(paint) === 'rgb(255, 241, 230)'],
+    ['…and shows the BOYALI badge', !!pb && pb.classList.contains('lid-badge--paint')],
+    ['…and names its reason inline', !!pb && pb.textContent.includes('BOYALI') && pb.textContent.includes('boyalı')],
+    ['…and strikes the title in orange', !!paint.querySelector('a.lid-strike.lid-strike--paint')],
+
+    // --- red tier: damage record ---
+    ['major row got .lid-inconsistent', major.classList.contains('lid-inconsistent')],
+    ['…and renders red DESPITE the host page forcing white', bgOf(major) === 'rgb(255, 230, 230)'],
+    ['honest row keeps the host page background', bgOf($('row-clean')) === 'rgb(255, 255, 255)'],
+    ['…and shows the TUTARSIZ badge', !!mb && mb.classList.contains('lid-badge--danger')],
+    ['…and names its reason inline', !!mb && mb.textContent.includes('TUTARSIZ') && mb.textContent.includes('tramer')],
+    ['…and strikes the title in red', !!major.querySelector('a.lid-strike.lid-strike--major')],
+
+    // --- honest listing ---
+    ['honest row was NOT flagged', !clean.classList.contains('lid-inconsistent') && !clean.classList.contains('lid-paint')],
+    ['honest row shows the consistent badge', !!cb && cb.classList.contains('lid-badge--ok')],
+
+    ['verdicts were written to GM storage', !!gmStore['lid_cache_v2']],
+  ];
+}
+
+function settled() {
+  return [...document.querySelectorAll('tr.searchResultsItem')]
+    .every((r) => r.querySelector('.lid-badge--danger, .lid-badge--paint, .lid-badge--ok, .lid-badge--error'));
+}
+
+function finish() {
+  const results = checks();
+  const failed = results.filter(([, ok]) => !ok);
+  const v = $('verdict');
+  v.className = failed.length === 0 ? 'ok' : 'bad';
+  v.textContent = (failed.length === 0
+    ? `✓ All ${results.length} checks passed.\n\n`
+    : `✗ ${failed.length} of ${results.length} checks failed.\n\n`)
+    + results.map(([label, ok]) => `${ok ? '✓' : '✗'} ${label}`).join('\n');
+}
+
+const poll = setInterval(() => { if (settled()) { clearInterval(poll); finish(); } }, 300);
+setTimeout(() => { clearInterval(poll); finish(); }, 30000);
+</script>
+</body>
+</html>

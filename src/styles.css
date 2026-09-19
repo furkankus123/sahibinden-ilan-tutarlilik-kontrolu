@@ -1,0 +1,61 @@
+/* =============================================================================
+ * styles.css — visual treatment for flagged listings
+ * Loaded by the extension via the manifest, and inlined into the userscript
+ * by build.ps1. Keep selectors prefixed with `lid-` to avoid colliding with
+ * the host site's own CSS.
+ * ========================================================================== */
+
+/* ROW BACKGROUNDS ARE NOT SET HERE.
+ *
+ * The host page styles its own result rows, and a rule selected by class loses
+ * to any id-based rule the site has, even with !important — specificity is
+ * compared before !important among important declarations. Rather than fight
+ * that with ever-longer selectors, content-core.js writes the row background as
+ * an inline `!important` style, which nothing in a stylesheet can outrank.
+ *
+ * The colours therefore live in ROW_BACKGROUNDS in src/content-core.js.
+ * The .lid-inconsistent / .lid-paint classes are still applied, so the rows
+ * stay selectable for tests and for anyone restyling them. */
+
+.lid-strike {
+    text-decoration: line-through !important;
+    text-decoration-thickness: 2px !important;
+}
+
+.lid-strike--major { text-decoration-color: #cc0000 !important; }
+.lid-strike--paint { text-decoration-color: #c2410c !important; }
+
+.lid-badge {
+    display: inline-block;
+    margin: 4px 0 0 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font: bold 11px/1.5 Arial, sans-serif;
+    vertical-align: middle;
+    white-space: nowrap;
+    cursor: help;
+}
+
+/* #c2410c keeps white text at ~4.8:1 contrast, which a lighter orange would not. */
+.lid-badge--danger  { background: #d40000; color: #fff; box-shadow: 0 0 0 2px #ffb3b3; font-size: 12px; }
+.lid-badge--paint   { background: #c2410c; color: #fff; box-shadow: 0 0 0 2px #fdba74; font-size: 12px; }
+.lid-badge--pending { background: #eeeeee; color: #666; font-weight: normal; }
+.lid-badge--ok      { background: #e3f6e3; color: #1d7a1d; font-weight: normal; }
+.lid-badge--error   { background: #fff1d6; color: #9a6400; font-weight: normal; }
+
+#lid-panel {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    z-index: 2147483647;
+    background: rgba(30, 30, 30, .92);
+    color: #fff;
+    font: 12px/1.4 Arial, sans-serif;
+    padding: 8px 12px;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+    max-width: 280px;
+    pointer-events: none;
+}
+
+#lid-panel b { color: #ff6b6b; }

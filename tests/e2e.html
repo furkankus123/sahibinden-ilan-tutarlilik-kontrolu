@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>E2E — fake results page</title>
+<link rel="stylesheet" href="../src/styles.css">
+<style>
+  body { font:14px/1.5 -apple-system,Segoe UI,Arial,sans-serif; margin:0; padding:24px 16px;
+         max-width:900px; margin-inline:auto; background:#fff; color:#1a1a1a; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.lead { color:#666; margin:0 0 20px; }
+  table { border-collapse:collapse; width:100%; }
+  td { border-bottom:1px solid #e2e2e2; padding:10px 8px; vertical-align:top; }
+  a.classifiedTitle { color:#0b57d0; text-decoration:none; font-weight:600; }
+  #verdict { font:600 16px/1.5 inherit; padding:12px 16px; border-radius:8px; margin:20px 0; }
+  #verdict.ok  { background:#e8f6e8; color:#1d7a1d; }
+  #verdict.bad { background:#ffe6e6; color:#c00; }
+  #verdict.run { background:#f0f0f0; color:#666; }
+  .expect { color:#888; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>End-to-end pipeline test</h1>
+<p class="lead">
+  A fake results page served from localhost. Rows link to local fixture pages, so the full
+  scan&nbsp;→&nbsp;fetch&nbsp;→&nbsp;parse&nbsp;→&nbsp;highlight path runs without a single
+  request to sahibinden.com.
+</p>
+
+<div id="verdict" class="run">running…</div>
+
+<table>
+  <tbody>
+    <!-- Row markup mirrors sahibinden's: tr.searchResultsItem > a.classifiedTitle -->
+    <tr class="searchResultsItem" data-expect="paint">
+      <td>
+        <a class="classifiedTitle" href="fixtures/ilan-1.html">Hatasız Boyasız 2019 Passat 1.6 TDI</a>
+        <div class="expect">expect: PAINT (orange) — "2 parça boyalı, tramer kaydı yoktur."</div>
+      </td>
+    </tr>
+
+    <tr class="searchResultsItem" data-expect="consistent">
+      <td>
+        <a class="classifiedTitle" href="fixtures/ilan-2.html">Tramersiz Hatasız 2020 Corolla Hybrid</a>
+        <div class="expect">expect: CONSISTENT — genuinely clean description</div>
+      </td>
+    </tr>
+
+    <tr class="searchResultsItem" data-expect="inconsistent">
+      <td>
+        <a class="classifiedTitle" href="fixtures/ilan-3.html">Boyasız Değişensiz 2017 Megane Touch</a>
+        <div class="expect">expect: INCONSISTENT (red) — "Tramer kaydı bulunmaktadır." (affirmative)</div>
+      </td>
+    </tr>
+
+    <tr class="searchResultsItem" data-expect="untouched">
+      <td>
+        <a class="classifiedTitle" href="fixtures/ilan-1.html">2018 Ford Focus Trend X</a>
+        <div class="expect">expect: UNTOUCHED — no clean claim in title, must never be fetched</div>
+      </td>
+    </tr>
+
+    <tr class="searchResultsItem" data-expect="error">
+      <td>
+        <a class="classifiedTitle" href="fixtures/ilan-404-missing.html">Hatasız 2015 Honda Civic</a>
+        <div class="expect">expect: ERROR badge — 404 must not stop the queue</div>
+      </td>
+    </tr>
+
+    <tr class="searchResultsItem" data-expect="no-description">
+      <td>
+        <a class="classifiedTitle" href="fixtures/ilan-6.html">Hatasız Boyasız 2016 Opel Astra</a>
+        <div class="expect">expect: NO-DESCRIPTION badge — never a silent "consistent"</div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<script src="../src/detector.js"></script>
+<script src="../src/site-adapters.js"></script>
+<script src="../src/queue.js"></script>
+<script src="../src/content-core.js"></script>
+<script>
+/* ---------------------------------------------------------------------------
+ * Test glue: same shape as userscript-glue.js / content-glue.js, but with
+ * plain fetch and near-zero delays so the suite finishes in a second.
+ * ------------------------------------------------------------------------ */
+const { ThrottledQueue, RateLimitError, HttpError } = LIDQueue;
+
+async function analyseListing(job) {
+  const res = await fetch(job.url);
+  if ([403, 429, 503].includes(res.status)) throw new RateLimitError(`HTTP ${res.status}`, res.status);
+  if (!res.ok) throw new HttpError(`HTTP ${res.status}`, res.status);
+
+  const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+  const adapter = LIDSiteAdapters.forHost(location.hostname);
+  const description = LIDSiteAdapters.extractDescription(doc, adapter);
+  return LIDDetector.analyze(job.title, description);
+}
+
+let core = null;
+const queue = new ThrottledQueue(analyseListing, {
+  DELAY_MIN_MS: 20, DELAY_MAX_MS: 60,   // fast, because there is no site to be polite to
+  onStateChange: (s) => core && core.setQueueState(s),
+});
+
+core = LIDContentCore.start({
+  css: null,                             // loaded via <link> above
+  debug: true,
+  requestAnalysis: (job) => queue.submit(job),
+});
+
+/* ---------------------------------------------------------------------------
+ * Assertions: read the rendered DOM, exactly as a user would see it.
+ * ------------------------------------------------------------------------ */
+function actualStateOf(row) {
+  const badge = row.querySelector('.lid-badge');
+  if (row.classList.contains('lid-inconsistent')) return 'inconsistent';
+  if (row.classList.contains('lid-paint')) return 'paint';
+  if (!badge) return 'untouched';
+  if (badge.classList.contains('lid-badge--ok')) return 'consistent';
+  if (badge.classList.contains('lid-badge--error')) {
+    return badge.textContent.includes('açıklama') ? 'no-description' : 'error';
+  }
+  return 'pending';
+}
+
+function check() {
+  const rows = [...document.querySelectorAll('tr.searchResultsItem')];
+  const states = rows.map((r) => ({ row: r, expect: r.dataset.expect, actual: actualStateOf(r) }));
+
+  if (states.some((s) => s.actual === 'pending')) return false; // still working
+
+  const failures = states.filter((s) => s.expect !== s.actual);
+
+  // The error badge must name the actual cause, not a generic message —
+  // otherwise a dead background worker and a 404 look identical.
+  const errRow = rows.find((r) => r.dataset.expect === 'error');
+  const errText = errRow.querySelector('.lid-badge').textContent;
+  if (!errText.includes('HTTP 404')) {
+    failures.push({ row: errRow, expect: 'badge naming "HTTP 404"', actual: `"${errText}"` });
+  }
+
+  // Both finding badges must state the reason inline, not only in the tooltip.
+  const reasonChecks = [
+    ['paint', 'BOYALI', 'boyalı'],
+    ['inconsistent', 'TUTARSIZ', 'tramer'],
+  ];
+  for (const [expect, label, word] of reasonChecks) {
+    const row = rows.find((r) => r.dataset.expect === expect);
+    const text = row.querySelector('.lid-badge')?.textContent || '';
+    if (!text.includes(label) || !text.includes(word)) {
+      failures.push({ row, expect: `badge reading "${label} · …${word}…"`, actual: `"${text}"` });
+    }
+  }
+
+  const v = document.getElementById('verdict');
+  v.className = failures.length === 0 ? 'ok' : 'bad';
+  v.textContent = failures.length === 0
+    ? `✓ All ${states.length} rows rendered as expected (404 badge reads "${errText}").`
+    : `✗ ${failures.length} problem(s): ` +
+      failures.map((f) => `"${f.row.querySelector('a').textContent.trim()}" expected ${f.expect}, got ${f.actual}`).join(' | ');
+  return true;
+}
+
+const poll = setInterval(() => { if (check()) clearInterval(poll); }, 200);
+setTimeout(() => { clearInterval(poll); check(); }, 15000); // hard stop
+</script>
+</body>
+</html>

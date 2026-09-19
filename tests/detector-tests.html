@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Detector Tests</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1a1a1a; --muted:#666; --line:#e2e2e2;
+          --pass:#1d7a1d; --pass-bg:#e8f6e8; --fail:#c00; --fail-bg:#ffe6e6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181a; --fg:#e8e8e8; --muted:#9aa0a6; --line:#33373b;
+            --pass:#6ddb6d; --pass-bg:#16301a; --fail:#ff7b7b; --fail-bg:#3a1a1a; }
+  }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,Segoe UI,Arial,sans-serif;
+         margin:0; padding:24px 16px; max-width:900px; margin-inline:auto; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+       margin:28px 0 8px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  #summary { font:600 16px/1.5 inherit; padding:12px 16px; border-radius:8px; margin:16px 0 0; }
+  #summary.ok  { background:var(--pass-bg); color:var(--pass); }
+  #summary.bad { background:var(--fail-bg); color:var(--fail); }
+  .case { border-left:3px solid transparent; padding:6px 0 6px 12px; margin:2px 0; }
+  .case.pass { border-color:var(--pass); }
+  .case.fail { border-color:var(--fail); background:var(--fail-bg); }
+  .tag { font:700 11px/1 monospace; padding:3px 6px; border-radius:3px; margin-right:8px; }
+  .pass .tag { background:var(--pass); color:#fff; }
+  .fail .tag { background:var(--fail); color:#fff; }
+  .input { font-family:ui-monospace,Consolas,monospace; font-size:13px; }
+  .detail { color:var(--muted); font-size:12px; margin-top:4px; padding-left:34px; }
+  .fail .detail { color:var(--fail); }
+  code { background:rgba(128,128,128,.15); padding:1px 4px; border-radius:3px; }
+</style>
+</head>
+<body>
+
+<h1>Listing Inconsistency Detector — logic tests</h1>
+<p style="color:var(--muted);margin:0">
+  Pure-function tests for <code>src/detector.js</code>. No network, no extension, no sahibinden.com.
+</p>
+<div id="summary">running…</div>
+<div id="out"></div>
+
+<script src="../src/detector.js"></script>
+<script src="../src/site-adapters.js"></script>
+<script>
+/* ---------------------------------------------------------------------------
+ * Tiny test harness
+ * ------------------------------------------------------------------------ */
+const out = document.getElementById('out');
+let passed = 0, failed = 0;
+
+function section(name) {
+  const h = document.createElement('h2');
+  h.textContent = name;
+  out.appendChild(h);
+}
+
+function report(ok, label, detail) {
+  ok ? passed++ : failed++;
+  const div = document.createElement('div');
+  div.className = 'case ' + (ok ? 'pass' : 'fail');
+  div.innerHTML = `<span class="tag">${ok ? 'PASS' : 'FAIL'}</span><span class="input"></span>`;
+  div.querySelector('.input').textContent = label;
+  if (detail && !ok) {
+    const d = document.createElement('div');
+    d.className = 'detail';
+    d.textContent = detail;
+    div.appendChild(d);
+  }
+  out.appendChild(div);
+}
+
+/** Asserts the verdict for a title+description pair. */
+function expectStatus(title, description, expected, note = '') {
+  const result = LIDDetector.analyze(title, description);
+  const ok = result.status === expected;
+  const found = result.evidence.map(e => e.keyword).join(', ') || '—';
+  report(
+    ok,
+    `${note ? note + ' → ' : ''}"${description ?? '(no description)'}"`,
+    `expected ${expected}, got ${result.status} (evidence: ${found})`
+  );
+}
+
+/** Shorthand: description-only tests all use the same clean-claim title. */
+const CLEAN_TITLE = 'Hatasız Boyasız 2018 Model';
+const expectFlag = (desc, note) => expectStatus(CLEAN_TITLE, desc, 'inconsistent', note);
+const expectOk   = (desc, note) => expectStatus(CLEAN_TITLE, desc, 'consistent',  note);
+
+function expectTitle(title, expectedKeywords) {
+  const got = LIDDetector.findCleanKeywords(title);
+  const ok = JSON.stringify(got) === JSON.stringify(expectedKeywords);
+  report(ok, `"${title}"`, `expected [${expectedKeywords}], got [${got}]`);
+}
+
+/* =========================================================================
+ * 1. TITLE DETECTION
+ * ====================================================================== */
+section('1. Title — clean-claim detection');
+
+expectTitle('Hatasız Boyasız 2018 Model Passat', ['hatasız', 'boyasız']);
+expectTitle('HATASIZ BOYASIZ TRAMERSIZ',         ['hatasız', 'boyasız', 'tramersiz']);
+expectTitle('hatasiz boyasiz degisensiz',        ['hatasız', 'boyasız', 'değişensiz']);
+expectTitle('Sahibinden Temiz 2018 Passat',      []);
+expectTitle('Aracım hatasızdır',                 ['hatasız']);
+
+/* =========================================================================
+ * 2. HONEST LISTINGS — must NOT be flagged
+ * ====================================================================== */
+section('2. Honest listings — must stay unflagged');
+
+expectOk('Aracımız tramersiz ve boyasızdır.',            'suffix negation');
+expectOk('Tramer kaydı yoktur.',                          'following negation word');
+expectOk('Değişen parça bulunmamaktadır.',                'bulunmamaktadır');
+expectOk('Boyalı ve değişen yoktur.',                     'shared negation via "ve"');
+expectOk('Boyalı, değişen ve tramer yoktur.',             'three-item list');
+expectOk('Çarpma sürtme yoktur.',                         'two-item list, no connector');
+expectOk('Aracımızda hiçbir boyalı parça yoktur.',        'quantifier AFTER keyword');
+expectOk('Hasar kaydı mevcut değil.',                     '"mevcut değil" beats "mevcut"');
+expectOk('Kaporta düzgün, tramer 0 TL.',                  'tramer 0 TL');
+expectOk('Değişeni yoktur.',                              'inflected keyword');
+
+/* =========================================================================
+ * 3. DECEITFUL LISTINGS — must be flagged
+ *    These are the cases the whole script exists for.
+ * ====================================================================== */
+section('3. Deceitful listings — must be flagged');
+
+expectFlag('2 parça boyalı, tramer kaydı yoktur.',        'quantified paint + denied tramer');
+expectFlag('2 parça lokal boyalı, tramer kaydı yoktur.',  'lokal boya + denied tramer');
+expectFlag('Tramer kaydı bulunmaktadır.',                 'AFFIRMATIVE bulunmaktadır');
+expectFlag('Hasar kaydı mevcuttur.',                      'affirmative mevcuttur');
+expectFlag('Ön tampon sürtme var.',                       'affirmative var');
+expectFlag('Arka çamurluk boyalı.',                       'part name as quantifier');
+expectFlag('Kaza kaydı yok, 1 parça boyalı.',             'denial first, disclosure second');
+expectFlag('Sadece ön kapı lokal boyalı, gerisi orjinaldir.', '"sadece" quantifier');
+expectFlag('Motor kaputu değişen, diğer her şey orjinal.', 'değişen as disclosure');
+
+/* =========================================================================
+ * 4. EDGE CASES
+ * ====================================================================== */
+section('4. Edge cases');
+
+expectStatus('Sahibinden 2018 Passat', 'Ön tampon boyalı.', 'not-a-claim',
+  'no clean claim in title → never fetched');
+expectStatus(CLEAN_TITLE, null, 'no-description', 'missing description');
+expectStatus(CLEAN_TITLE, '', 'no-description', 'empty description');
+expectOk('   ', 'whitespace-only description is not evidence');
+
+report(
+  LIDDetector.normalize('HATASIZ Boyalı Değişen') === 'hatasiz boyali degisen',
+  'normalize() folds Turkish characters and lowercases with tr-TR rules'
+);
+
+/* =========================================================================
+ * 5. BLOCKED-PAGE DETECTION
+ *
+ * A challenge page returns HTTP 200. If it is not recognised, the script
+ * reads it as a listing with no damage text and reports a clean verdict —
+ * the worst possible failure mode for a fraud detector.
+ * ====================================================================== */
+section('5. Blocked-page detection');
+
+function expectBlocked(label, html, url, shouldBlock) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const got = LIDSiteAdapters.looksBlocked(doc, url, LIDDetector.normalize);
+  report(got === shouldBlock, label, `expected blocked=${shouldBlock}, got ${got}`);
+}
+
+// Captured from www.sahibinden.com on 2026-09-19.
+expectBlocked(
+  'real sahibinden interstitial (title/body/path all differ from generic patterns)',
+  `<html><head><title>sahibinden.com Yükleniyor</title></head><body>
+     <div>Tarayıcınızı kontrol ediyoruz...</div>
+     <div>Devam Et butonuna tıklayarak kaldığınız yerden devam edebilirsiniz.</div>
+   </body></html>`,
+  'https://www.sahibinden.com/cs/tloading?returnUrl=https%3A%2F%2Fwww.sahibinden.com%2Fotomobil',
+  true
+);
+
+expectBlocked(
+  'generic captcha page',
+  '<html><head><title>Doğrulama</title></head><body><div class="g-recaptcha"></div></body></html>',
+  'https://www.sahibinden.com/x', true
+);
+
+expectBlocked(
+  'login redirect',
+  '<html><head><title>Giriş Yap</title></head><body>Üye girişi</body></html>',
+  'https://secure.sahibinden.com/giris', true
+);
+
+expectBlocked(
+  'a genuine listing page must NOT be treated as blocked',
+  `<html><head><title>2019 Passat 1.6 TDI - sahibinden.com</title></head><body>
+     <div id="classifiedDescription"><p>2 parça boyalı, tramer kaydı yoktur.</p></div>
+   </body></html>`,
+  'https://www.sahibinden.com/ilan/otomobil-123456/detay', false
+);
+
+/* =========================================================================
+ * 6. SEVERITY — paint (orange) vs major (red)
+ *
+ * A repainted panel and a registered damage record are both contradictions
+ * of "hatasız", but a buyer needs to tell them apart from the results page.
+ * ====================================================================== */
+section('6. Severity — paint vs major');
+
+function expectSeverity(desc, expected, note) {
+  const r = LIDDetector.analyze(CLEAN_TITLE, desc);
+  const ok = r.status === 'inconsistent' && r.severity === expected;
+  report(ok, `${note} → "${desc}"`,
+    `expected severity=${expected}, got status=${r.status} severity=${r.severity}`);
+}
+
+expectSeverity('2 parça boyalı, tramer kaydı yoktur.',   'paint', 'paint only, tramer denied');
+expectSeverity('Sadece ön kapı lokal boyalı.',            'paint', 'lokal boya only');
+expectSeverity('Arka çamurluk boyalı.',                   'paint', 'single painted panel');
+expectSeverity('Tramer kaydı bulunmaktadır.',             'major', 'damage record');
+expectSeverity('Motor kaputu değişen, gerisi orjinal.',   'major', 'replaced part');
+expectSeverity('Ön tampon sürtme var.',                   'major', 'sürtme');
+expectSeverity('2 parça boyalı, motor kaputu değişen.',   'major', 'paint + major → major wins');
+
+// The badge shows these words, so they must be the real matches.
+const paintCase = LIDDetector.analyze(CLEAN_TITLE, '2 parça boyalı, tramer kaydı yoktur.');
+report(paintCase.words.join(', ') === 'boyalı',
+  'words[] carries the matched keyword for the badge',
+  `got [${paintCase.words}]`);
+
+const mixedCase = LIDDetector.analyze(CLEAN_TITLE, 'Ön kapı lokal boyalı ve motor kaputu değişen.');
+report(mixedCase.words.length === 2 && mixedCase.words.includes('değişen'),
+  'words[] lists every distinct finding',
+  `got [${mixedCase.words}]`);
+
+const clean = LIDDetector.analyze(CLEAN_TITLE, 'Tramer kaydı yoktur.');
+report(clean.severity === null && clean.words.length === 0,
+  'a consistent listing carries no severity and no words',
+  `got severity=${clean.severity} words=[${clean.words}]`);
+
+/* =========================================================================
+ * 7. CACHED-VERDICT SCHEMA
+ *
+ * Verdicts live in a 24-hour cache, so after a release the caches still hold
+ * objects built by the previous version. Serving one of those renders with
+ * fields that no longer exist — which is exactly how the orange paint tier
+ * appeared broken while being merely unreachable.
+ * ====================================================================== */
+section('7. Cached-verdict schema');
+
+report(LIDDetector.isCurrentSchema(LIDDetector.analyze(CLEAN_TITLE, 'Arka çamurluk boyalı.')),
+  'a freshly produced verdict is accepted');
+
+// The exact shape the v1 build wrote into chrome.storage.local.
+const v1Cached = {
+  status: 'inconsistent',
+  cleanHits: ['hatasız'],
+  evidence: [{ keyword: 'boyalı', snippet: '…2 parça boyalı…' }],
+};
+report(!LIDDetector.isCurrentSchema(v1Cached),
+  'a verdict cached by the pre-severity build is rejected');
+
+report(!LIDDetector.isCurrentSchema(null) && !LIDDetector.isCurrentSchema(undefined),
+  'a missing verdict is rejected rather than throwing');
+
+report(!LIDDetector.isCurrentSchema({ ...v1Cached, schema: 1 }),
+  'an explicitly older schema number is rejected');
+
+report(LIDDetector.analyze(CLEAN_TITLE, 'Arka çamurluk boyalı.').schema === LIDDetector.RESULT_SCHEMA,
+  'every verdict carries the current schema number');
+
+/* =========================================================================
+ * 8. BARE "boya" AND NEUTRAL CONTEXTS
+ *
+ * "2 parça boya" is one of the most common ways a Turkish seller discloses
+ * paint, and matching only "boyalı" / "lokal boya" missed all of it. Adding
+ * bare "boya" closes that hole but opens two others — original factory paint
+ * and paint-report language — which the NEUTRAL lists handle.
+ * ====================================================================== */
+section('8. Bare "boya" and neutral contexts');
+
+expectFlag('2 parça boya var.',                 'quantified + affirmative');
+expectFlag('Ön kapıda boya mevcut.',            '"mevcut" affirms');
+expectFlag('Kaporta boyası yenilenmiş.',        'possessive suffix "boyası"');
+expectFlag('Sadece tamponda boya yapılmış.',    '"boya yapılmış"');
+expectFlag('4 parça boya, tramer yok.',         'paint disclosed, tramer denied');
+
+expectOk('Tüm parçalar orjinal boyalıdır.',     'orjinal = factory paint, NOT repainted');
+expectOk('Aracın boyası orjinaldir.',           'original paint, possessive form');
+expectOk('Boya kalınlığı ölçüldü, temiz çıktı.','thickness measurement, not damage');
+expectOk('Boya raporu mevcuttur, tertemiz.',    'a paint report is a document');
+expectOk('Boya yoktur.',                        'plain denial');
+expectOk('Aracımız boyasızdır.',                'bare "boya" must not fire inside "boyasız"');
+
+// Severity must stay PAINT for these — they are cosmetic, not structural.
+expectSeverity('2 parça boya var.',   'paint', 'bare boya is the paint tier');
+expectSeverity('4 parça boya, motor kaputu değişen.', 'major', 'paint + replaced part');
+
+/* =========================================================================
+ * SUMMARY
+ * ====================================================================== */
+const summary = document.getElementById('summary');
+summary.className = failed === 0 ? 'ok' : 'bad';
+summary.textContent = failed === 0
+  ? `✓ All ${passed} tests passed.`
+  : `✗ ${failed} of ${passed + failed} tests failed.`;
+</script>
+</body>
+</html>

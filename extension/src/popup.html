@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg:#ffffff; --fg:#1a1a1a; --muted:#6b7075; --line:#e4e6e8;
+    --accent:#d40000; --field:#f4f5f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1e2021; --fg:#e8e8e8; --muted:#9aa0a6; --line:#34383b;
+            --accent:#ff5a5a; --field:#2a2d2f; }
+  }
+  * { box-sizing:border-box; }
+  body { width:290px; margin:0; padding:14px; background:var(--bg); color:var(--fg);
+         font:13px/1.45 -apple-system,"Segoe UI",Arial,sans-serif; }
+
+  header { display:flex; align-items:center; gap:9px; margin-bottom:12px; }
+  header img { width:26px; height:26px; }
+  header h1 { font-size:13px; margin:0; line-height:1.25; }
+  header span { display:block; font-weight:400; color:var(--muted); font-size:11px; }
+
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px;
+         padding:9px 0; border-top:1px solid var(--line); }
+  .row label { cursor:pointer; }
+  .row small { display:block; color:var(--muted); font-size:11px; }
+
+  /* Switch */
+  .sw { position:relative; width:36px; height:20px; flex:0 0 36px; }
+  .sw input { opacity:0; width:0; height:0; position:absolute; }
+  .sw span { position:absolute; inset:0; background:#b9bdc1; border-radius:20px;
+             transition:background .15s; cursor:pointer; }
+  .sw span::after { content:""; position:absolute; top:2px; left:2px; width:16px; height:16px;
+                    background:#fff; border-radius:50%; transition:transform .15s; }
+  .sw input:checked + span { background:var(--accent); }
+  .sw input:checked + span::after { transform:translateX(16px); }
+  .sw input:focus-visible + span { outline:2px solid var(--accent); outline-offset:2px; }
+
+  .stats { display:flex; gap:8px; margin:12px 0 10px; }
+  .stat { flex:1; background:var(--field); border-radius:7px; padding:8px 6px; text-align:center; }
+  .stat b { display:block; font-size:16px; line-height:1.2; }
+  .stat small { color:var(--muted); font-size:10px; }
+
+  button { width:100%; padding:8px; border:1px solid var(--line); background:var(--field);
+           color:var(--fg); border-radius:7px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button:disabled { opacity:.55; cursor:default; border-color:var(--line); color:var(--muted); }
+
+  footer { margin-top:11px; padding-top:9px; border-top:1px solid var(--line);
+           color:var(--muted); font-size:10.5px; line-height:1.4; }
+</style>
+</head>
+<body>
+
+<header>
+  <img src="../icons/icon48.png" alt="">
+  <h1>Tutarsızlık Dedektörü<span>sahibinden.com</span></h1>
+</header>
+
+<div class="row">
+  <label for="enabled">Etkin<small>Kapalıyken hiçbir istek yapılmaz</small></label>
+  <span class="sw"><input type="checkbox" id="enabled"><span></span></span>
+</div>
+
+<div class="row">
+  <label for="badges">Tutarlı ilanları da işaretle<small>"✓ tutarlı" rozetini göster</small></label>
+  <span class="sw"><input type="checkbox" id="badges"><span></span></span>
+</div>
+
+<div class="stats">
+  <div class="stat"><b id="cached">–</b><small>önbellek</small></div>
+  <div class="stat"><b id="flagged">–</b><small>tutarsız</small></div>
+</div>
+
+<button id="clear">Önbelleği temizle</button>
+
+<footer>
+  İlan başlığında "hatasız / boyasız" yazıp açıklamasında boya, değişen veya
+  hasar kaydı geçen ilanları işaretler. Sonuç bir ipucudur, kanıt değildir —
+  ilanı yine de kendiniz okuyun.
+</footer>
+
+<script src="popup.js"></script>
+</body>
+</html>

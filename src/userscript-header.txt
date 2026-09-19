@@ -1,0 +1,26 @@
+// ==UserScript==
+// @name         Sahibinden Tutarsızlık Dedektörü
+// @name:en      Sahibinden Listing Inconsistency Detector
+// @namespace    https://github.com/Furkankus123/sahibinden-ilan-tutarlilik-kontrolu
+// @version      2.0.0
+// @description  Başlıkta "hatasız / boyasız / değişensiz / tramersiz" yazan, ancak ilan açıklamasında boya, değişen parça veya hasar kaydı geçen ilanları işaretler.
+// @description:en  Flags car listings whose titles claim "hatasız / boyasız / değişensiz / tramersiz" while the detail description mentions paint, replaced parts or damage records.
+// @author       Furkankus123
+// @license      MIT
+// @homepageURL  https://github.com/Furkankus123/sahibinden-ilan-tutarlilik-kontrolu
+// @supportURL   https://github.com/Furkankus123/sahibinden-ilan-tutarlilik-kontrolu/issues
+// @match        https://www.sahibinden.com/*
+// @match        https://sahibinden.com/*
+// @connect      sahibinden.com
+// @connect      www.sahibinden.com
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @run-at       document-idle
+// @noframes
+// ==/UserScript==
+
+// -----------------------------------------------------------------------------
+// GENERATED FILE — do not edit.
+// Built from src/ by build.ps1. Edit the sources and rebuild instead.
+// -----------------------------------------------------------------------------
