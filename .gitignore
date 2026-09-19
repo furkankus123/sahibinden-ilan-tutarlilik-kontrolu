@@ -1,0 +1,20 @@
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- Logs and scratch ---
+*.log
+scratch/
+tmp/
+
+# NOTE: dist/ is deliberately NOT ignored.
+# The built userscript is committed so people can install it straight from a
+# GitHub raw link, and so Greasy Fork can sync from the repository.
