@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sahibinden Tutarsızlık Dedektörü",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Başlığında hatasız/boyasız yazan ama açıklamasında boya, değişen parça veya hasar kaydı geçen ilanları işaretler.",
 
   "minimum_chrome_version": "102",

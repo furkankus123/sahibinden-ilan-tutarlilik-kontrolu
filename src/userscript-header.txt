@@ -2,7 +2,7 @@
 // @name         Sahibinden Tutarsızlık Dedektörü
 // @name:en      Sahibinden Listing Inconsistency Detector
 // @namespace    https://github.com/Furkankus123/sahibinden-ilan-tutarlilik-kontrolu
-// @version      2.1.0
+// @version      2.1.1
 // @description  Başlıkta "hatasız / boyasız / değişensiz / tramersiz" yazan, ancak ilan açıklamasında boya, değişen parça veya hasar kaydı geçen ilanları işaretler.
 // @description:en  Flags car listings whose titles claim "hatasız / boyasız / değişensiz / tramersiz" while the detail description mentions paint, replaced parts or damage records.
 // @author       Furkankus123
