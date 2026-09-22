@@ -26,9 +26,49 @@ remote server operated by the developer.
 |---|---|---|---|
 | Verdicts per listing URL (`inconsistent` / `consistent` / no description, plus matched keywords) | `chrome.storage.local` | Avoids re-requesting a listing you already checked. Expires after 24 hours; capped at 600 entries. | **No** |
 | Two preferences (extension on/off, show "consistent" badges) | `chrome.storage.sync` | Keeps your settings consistent across your Chrome profiles. | Only through **your own** Chrome Sync, to your Google account. Two booleans; no browsing data. |
+| Feedback you give by pressing "✓ Doğru" / "✗ Yanlış": the listing URL and title, the verdict shown, and when | `chrome.storage.local` | Lets you correct a wrong verdict so the rules can be improved. Recorded **only** when you press one of those buttons. | **No**, unless you press "JSON olarak dışa aktar" and send the file somewhere yourself. |
+| Words from listing descriptions that the extension does not recognise, with a short example sentence and a count | `chrome.storage.local` | Shows which Turkish vocabulary is missing, so the matcher can be extended from real listings instead of guesswork. Taken from descriptions already fetched for analysis; no extra requests. | **No**, same as above. |
 
-Clearing the cache at any time: open the extension's popup and press
-**"Önbelleği temizle"**. Removing the extension deletes both stores.
+Clearing at any time: the extension's popup has **"Önbelleği temizle"** for the
+verdict cache and **"Öğrenme verisini sil"** for the feedback and vocabulary.
+Removing the extension deletes all of it.
+
+Nothing in the table above is uploaded anywhere by default. The export button
+writes a file to your own computer; what happens to that file afterwards is
+entirely your choice.
+
+## Optional: contributing anonymously
+
+There is one setting — **"Anonim katkı"**, off unless you switch it on — that
+sends corrections to a shared collection so the Turkish matching rules can be
+improved for everyone.
+
+It cannot send anything until two separate things happen: you turn the switch
+on, **and** you accept the additional site permission Chrome then asks for. A
+default installation holds no permission for any host except sahibinden.com.
+
+When it is on, a contribution contains only:
+
+- the sentence that produced the verdict, with phone numbers, plates, e-mail
+  addresses and long digit runs replaced by placeholders
+- the verdict that was shown and whether you marked it correct or wrong
+- words the extension did not recognise, with one example sentence
+- the extension's version number
+
+It never contains the listing URL, the listing title, an account name, a device
+or user identifier, a cookie, or anything about which listings you looked at.
+The code that builds a contribution copies fields one by one from a fixed list,
+so a field added to the local store later cannot leak by being overlooked, and
+every contribution is checked for identifying content immediately before it is
+sent — a failed check cancels the upload. Both the list and the check are
+covered by the test suite in `tests/detector-tests.html`.
+
+The receiving server stores no IP address. For its daily request limit it keeps
+a salted hash of the address for the current day only.
+
+Press **"Ne gönderileceğini göster"** in the popup to read the exact contents of
+the next contribution before it leaves. Turning the switch back off stops all
+sending immediately.
 
 ## What is NOT collected
 

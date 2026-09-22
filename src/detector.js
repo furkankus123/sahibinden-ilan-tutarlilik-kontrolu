@@ -48,8 +48,9 @@
      *   1 — status, cleanHits, evidence[{keyword, snippet}]
      *   2 — adds severity, words[], evidence[].severity
      *   3 — adds bare "boya" keyword + NEUTRAL_BEFORE/AFTER rules
+     *   4 — adds evidence[].reason and reasons[] from slot extraction
      */
-    const RESULT_SCHEMA = 3;
+    const RESULT_SCHEMA = 4;
 
     const KEYWORDS = {
         // Title claims that the car is clean.
@@ -312,10 +313,114 @@
         return matches;
     }
 
+    /* -------------------------------------------------------------------------
+     * SLOT EXTRACTION
+     *
+     * A keyword hit alone ("boyalı") is a poor explanation. These functions read
+     * the clause around the hit for the two things a buyer actually wants —
+     * WHICH panel and HOW MANY — and assemble a readable reason from them.
+     * The vocabulary lives in lexicon.js.
+     * ---------------------------------------------------------------------- */
+
+    const Lex = () => (typeof globalThis !== 'undefined' ? globalThis.LIDLexicon : null);
+
+    /** The sentence containing `pos`, as [start, end). Commas do not split it. */
+    function sentenceBounds(text, pos) {
+        const before = text.slice(0, pos);
+        let start = 0;
+        for (const ch of ['.', '!', '?', ';', '\n']) {
+            start = Math.max(start, before.lastIndexOf(ch) + 1);
+        }
+        const rel = text.slice(pos).search(/[.!?;\n]/);
+        return [start, rel === -1 ? text.length : pos + rel];
+    }
+
+    /** The clause containing `pos`, as [start, end). Commas DO split it. */
+    function clauseBounds(text, pos) {
+        const before = text.slice(0, pos);
+        let start = 0;
+        for (const ch of ['.', '!', '?', ';', '\n', ',']) {
+            start = Math.max(start, before.lastIndexOf(ch) + 1);
+        }
+        const rel = text.slice(pos).search(/[.!?;\n,]/);
+        return [start, rel === -1 ? text.length : pos + rel];
+    }
+
+    /** Nearest part name to the match, plus any position word qualifying it. */
+    function findPart(clause, matchAt) {
+        const lex = Lex();
+        if (!lex) return null;
+
+        let best = null;
+        for (const part of lex.PARTS) {
+            const re = new RegExp(WORD_START + escapeRegExp(part.stem), 'g');
+            let m;
+            while ((m = re.exec(clause)) !== null) {
+                const distance = Math.abs(m.index - matchAt);
+                if (!best || distance < best.distance) {
+                    best = { part, at: m.index, distance };
+                }
+            }
+        }
+        if (!best) return null;
+
+        // A position word immediately before the part: "sağ ön çamurluk".
+        const lead = clause.slice(Math.max(0, best.at - 12), best.at);
+        for (const pos of lex.POSITIONS) {
+            if (new RegExp(`${WORD_START}${escapeRegExp(pos.stem)}\\s*$`).test(lead)) {
+                return `${pos.label} ${best.part.label}`;
+            }
+        }
+        return best.part.label;
+    }
+
+    /** A count expressed as digits or a Turkish number word: "2 parça", "iki bölge". */
+    function findCount(clause) {
+        const lex = Lex();
+        if (!lex) return null;
+
+        const units = lex.COUNT_UNITS.map(escapeRegExp).join('|');
+        const words = Object.keys(lex.NUMBER_WORDS).map(escapeRegExp).join('|');
+        const re = new RegExp(`${WORD_START}(\\d{1,2}|${words})\\s*(${units})`, 'i');
+
+        const m = re.exec(clause);
+        if (!m) return null;
+
+        const n = /^\d+$/.test(m[1]) ? Number(m[1]) : lex.NUMBER_WORDS[m[1]];
+        if (!n) return null;
+
+        // Display the unit the seller used, in its original spelling.
+        const unit = { parca: 'parça', adet: 'adet', bolge: 'bölge', nokta: 'nokta', yer: 'yer' }[m[2]] || m[2];
+        return `${n} ${unit}`;
+    }
+
+    /**
+     * Assembles the human-readable reason for one finding, e.g.
+     *   "ön kapı boyalı", "2 parça boyalı", "tramer kaydı"
+     */
+    function buildReason(text, m) {
+        const lex = Lex();
+        const phrase = (lex && lex.KEYWORD_PHRASING[m.keyword]) || m.keyword;
+
+        // "tramer kaydı" reads badly with a panel glued in front of it.
+        if (lex && lex.STANDALONE.includes(m.keyword)) return phrase;
+
+        const [cs, ce] = clauseBounds(text, m.start);
+        const clause = text.slice(cs, ce);
+
+        const part = findPart(clause, m.start - cs);
+        if (part) return `${part} ${phrase}`;
+
+        const count = findCount(clause);
+        if (count) return `${count} ${phrase}`;
+
+        return phrase;
+    }
+
     /**
      * Finds non-negated damage evidence in a description.
      * @param {string} rawText raw description text
-     * @returns {Array<{keyword: string, snippet: string}>}
+     * @returns {Array<{keyword: string, severity: string, reason: string, snippet: string}>}
      */
     function findDamageEvidence(rawText) {
         const text = normalize(rawText);
@@ -326,6 +431,7 @@
             .map((m) => ({
                 keyword: m.keyword,
                 severity: m.severity,
+                reason: buildReason(text, m),
                 snippet: '…' + text
                     .slice(Math.max(0, m.start - 30), Math.min(text.length, m.end + 40))
                     .replace(/\n/g, ' ') + '…',
@@ -361,7 +467,7 @@
      */
     function analyze(title, description) {
         const cleanHits = findCleanKeywords(title);
-        const empty = { schema: RESULT_SCHEMA, severity: null, cleanHits, evidence: [], words: [] };
+        const empty = { schema: RESULT_SCHEMA, severity: null, cleanHits, evidence: [], words: [], reasons: [] };
 
         if (cleanHits.length === 0) return { status: 'not-a-claim', ...empty };
         if (!description) return { status: 'no-description', ...empty };
@@ -376,12 +482,102 @@
             cleanHits,
             evidence,
             words: evidenceWords(evidence),
+            // Distinct, display-ready reason lines, in the order they appear in
+            // the description. This is what the expandable badge renders.
+            reasons: [...new Set(evidence.map((e) => e.reason))],
         };
     }
 
     /** True when a cached verdict was produced by this version of the shape. */
     function isCurrentSchema(result) {
         return !!result && result.schema === RESULT_SCHEMA;
+    }
+
+    /* -------------------------------------------------------------------------
+     * CORPUS HARVESTING
+     *
+     * Every listing the user browses is free evidence about how Turkish sellers
+     * actually phrase damage. This collects the words we do NOT yet understand
+     * that sit in the same clause as a damage keyword — the exact place a
+     * missing vocabulary entry would hide.
+     *
+     * It reads text already fetched for analysis. It never issues a request,
+     * and it is the reason this works from ordinary browsing instead of a crawl.
+     * ---------------------------------------------------------------------- */
+
+    // Function words that carry no vocabulary signal.
+    const STOPWORDS = new Set([
+        've', 'ile', 'veya', 'ya', 'da', 'de', 'ki', 'ise', 'ama', 'fakat', 'ancak',
+        'bir', 'bu', 'su', 'o', 'her', 'hic', 'tum', 'tumu', 'hepsi', 'diger', 'digeri',
+        'icin', 'gibi', 'kadar', 'sonra', 'once', 'uzeri', 'uzerine', 'ayrica',
+        'olarak', 'olan', 'olup', 'oldugu', 'edilmis', 'edilmistir', 'yapilan',
+        'arac', 'aracin', 'aracimiz', 'araba', 'oto', 'otomobil', 'model', 'km',
+        'sahibinden', 'satilik', 'fiyat', 'tl', 'not', 'bilgi', 'lutfen', 'ilgilenen',
+        'tertemiz', 'temiz', 'bakimli', 'garanti', 'servis', 'ekspertiz', 'rapor',
+        'degisim', 'takas', 'kredi', 'senet', 'pesin', 'anahtar', 'ruhsat',
+    ]);
+
+    /** Known stems, so "tamponda" and "kaputu" count as understood. */
+    function knownStems() {
+        const lex = Lex();
+        const stems = [
+            ...CLEAN_NORM,
+            ...DAMAGE_NORM,
+            ...NEGATION_WORDS, ...AFFIRMATION_WORDS,
+            ...NEUTRAL_BEFORE, ...NEUTRAL_AFTER,
+            ...QUANTIFIER_WORDS,
+        ].map((w) => normalize(w));
+
+        if (lex) {
+            stems.push(
+                ...lex.PARTS.map((p) => p.stem),
+                ...lex.POSITIONS.map((p) => p.stem),
+                ...lex.COUNT_UNITS,
+                ...Object.keys(lex.NUMBER_WORDS)
+            );
+        }
+        // Split multi-word stems into their parts. Keeping only the first word
+        // left "kaydı" (from "tramer kaydı") looking unknown, which polluted
+        // every harvest with a word we already understand.
+        return stems
+            .flatMap((s) => s.split(' '))
+            .filter((s) => s.length >= 2);
+    }
+
+    let STEM_CACHE = null;
+
+    function isKnownToken(token) {
+        if (STOPWORDS.has(token)) return true;
+        if (!STEM_CACHE) STEM_CACHE = knownStems();
+        return STEM_CACHE.some((stem) => token.startsWith(stem));
+    }
+
+    /**
+     * Unknown words sharing a clause with a damage keyword.
+     * @returns {Array<{term: string, count: number, example: string}>}
+     */
+    function harvestTerms(rawText) {
+        const text = normalize(rawText);
+        const found = new Map();
+
+        for (const m of collectMatches(text)) {
+            // Sentence scope, NOT clauseBounds: that one also splits on commas,
+            // which would drop "göçük var" from "göçük var, boyalı" — precisely
+            // the neighbouring word we are trying to discover.
+            const [cs, ce] = sentenceBounds(text, m.start);
+            const clause = text.slice(cs, ce).trim();
+
+            for (const token of clause.split(/[^a-z0-9]+/)) {
+                if (token.length < 3 || /^\d/.test(token)) continue;
+                if (isKnownToken(token)) continue;
+
+                const entry = found.get(token)
+                    || { term: token, count: 0, example: clause.slice(0, 140) };
+                entry.count++;
+                found.set(token, entry);
+            }
+        }
+        return [...found.values()];
     }
 
     return {
@@ -391,6 +587,7 @@
         KEYWORDS,
         TUNING,
         normalize,
+        harvestTerms,
         findCleanKeywords,
         findDamageEvidence,
         worstSeverity,

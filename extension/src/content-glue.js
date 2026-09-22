@@ -150,6 +150,14 @@
         }
 
         const description = LIDSiteAdapters.extractDescription(doc, adapter);
+
+        // Free evidence: this text was fetched for analysis anyway, so mine it
+        // for vocabulary we do not yet understand. No extra request is made.
+        if (description) {
+            const terms = LIDDetector.harvestTerms(description);
+            if (terms.length) post({ type: 'terms', terms });
+        }
+
         return { status: 'ok', result: LIDDetector.analyze(job.title, description) };
     }
 
@@ -230,6 +238,7 @@
             css: null, // injected by the manifest instead
             showProgressBadges: prefs.showProgressBadges,
             debug: SETTINGS.DEBUG,
+            recordFeedback: (entry) => post({ type: 'feedback', entry }),
             requestAnalysis(job) {
                 const id = nextId++;
                 activeJobs.set(id, job);

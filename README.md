@@ -9,12 +9,27 @@ açıklamasında boya, değişen parça veya hasar kaydı geçen araç ilanları
 
 | Seviye | Tetikleyen | Satır rengi | Rozet |
 |---|---|---|---|
-| **Boyalı** | `boya`, `boyalı`, `lokal boya` | turuncu | `🎨 BOYALI · boya` |
-| **Tutarsız** | `değişen`, `tramer`, `hasar kaydı`, `çarpma`, `sürtme` | kırmızı | `⚠️ TUTARSIZ · tramer` |
+| **Boyalı** | `boya`, `boyalı`, `lokal boya` | turuncu | `🎨 BOYALI · 2 parça boyalı` |
+| **Tutarsız** | `değişen`, `tramer`, `hasar kaydı`, `çarpma`, `sürtme` | kırmızı | `⚠️ TUTARSIZ · tramer kaydı` |
 
 Ağır olan kazanır: "2 parça boyalı, motor kaputu değişen" → kırmızı.
-Her rozet, o kararı üreten kelimeleri yanında yazar; nedeni görmek için
-üzerine gelmeniz gerekmez.
+
+Rozet, kararın gerekçesini yanında yazar. Üzerine **tıklayınca** açılıyor ve
+bütün nedenleri, her birinin geldiği cümleyle birlikte gösteriyor. Gerekçe
+salt kelime değil, cümleden çıkarılmış bir ifade:
+
+| Açıklamada geçen | Rozette yazan |
+|---|---|
+| `Sol ön çamurluk boyalı.` | sol ön çamurluk boyalı |
+| `Sadece arka tamponda lokal boya mevcut.` | arka tampon lokal boyalı |
+| `İki bölge boya yapılmış.` | 2 bölge boyalı |
+| `Motor kaputu değişen.` | kaput değişen |
+
+Açılan kutuda **"Bu karar doğru mu? ✓ Doğru / ✗ Yanlış"** düğmeleri var.
+Yanlış bir karar gördüğünüzde işaretlerseniz, o örnek yerel olarak kaydedilir
+ve kuralların düzeltilmesinde kullanılır. "✓ tutarlı" rozetinde de aynı
+düğmeler var, çünkü kaçırılan bir ilan yanlış işaretlenenden daha pahalı bir
+hatadır.
 
 İki biçimde dağıtılır, ikisi de aynı kaynaktan derlenir:
 
@@ -76,6 +91,7 @@ Düz bir kelime aramasından farkı burada:
 | `tramer kaydı yoktur` | temiz | ardından gelen olumsuzlama |
 | `boyalı ve değişen yoktur` | temiz | olumsuzlama listeye dağılır |
 | `boya raporu mevcuttur` | temiz | belge, hasar değil |
+| `boya kalınlığı ölçüldü` | temiz | ölçüm, hasar değil |
 | `tüm parçalar orjinal boyalı` | temiz | fabrika boyası |
 | `2 parça boya var` | **BOYALI** | miktar belirtilmiş bildirim |
 | `2 parça boyalı, tramer kaydı yok` | **BOYALI** | boya bildirilmiş, tramer reddedilmiş |
@@ -83,6 +99,22 @@ Düz bir kelime aramasından farkı burada:
 
 Son iki satır önemli: basit bir arama bunları "temiz" sayar, çünkü cümlede
 "yok" geçiyor.
+
+### Gizlilik
+
+Varsayılan olarak hiçbir veri gönderilmez. Kararlar ve geri bildirimleriniz
+yalnızca kendi tarayıcınızda durur; eklenti penceresinden JSON olarak dışa
+aktarabilir veya silebilirsiniz.
+
+İsterseniz **"Anonim katkı"** seçeneğini açarak kuralların gelişmesine
+katkıda bulunabilirsiniz. Açtığınızda Chrome ayrıca bir site izni soracak;
+ikisini birden onaylamadan tek bir istek bile gitmez. Gönderilen şey yalnızca
+kararı üreten cümle, verilen karar ve sizin işaretinizdir. İlan adresi, başlık
+ve kimlik bilgisi gönderilmez; telefon, plaka ve e-posta metinden otomatik
+temizlenir. Göndermeden önce **"Ne gönderileceğini göster"** ile tam içeriği
+okuyabilirsiniz.
+
+Ayrıntılar: [PRIVACY.md](PRIVACY.md).
 
 ### Siteye saygılı
 
@@ -108,7 +140,7 @@ py -m http.server 8777 --directory .
 
 | Adres | Ne yapar | Beklenen |
 |---|---|---|
-| `/tests/detector-tests.html` | 61 mantık testi, ağ yok | `✓ All 61 tests passed.` |
+| `/tests/detector-tests.html` | 95 mantık testi, ağ yok | `✓ All 95 tests passed.` |
 | `/tests/e2e.html` | sahte sonuç sayfası, yerel fixture'lar | `✓ All 6 rows rendered as expected.` |
 | `/tests/userscript-smoke.html` | **derlenmiş** userscript, GM API'leri taklit | `✓ All 18 checks passed.` |
 
@@ -151,6 +183,8 @@ py tools\make-icons.py
 ```
 src/                      düzenlediğiniz tek yer
   detector.js             Türkçe kelime + olumsuzlama mantığı (saf fonksiyonlar)
+  lexicon.js              parça adları, konum ve sayı sözcükleri
+  upload.js               anonim katkı sınırı: ne gönderilir, ne temizlenir
   site-adapters.js        siteye özgü seçiciler ve HTML çıkarımı
   queue.js                geri çekilmeli, hız sınırlı kuyruk
   content-core.js         sonuç sayfası DOM'u: tarama, rozet, renklendirme

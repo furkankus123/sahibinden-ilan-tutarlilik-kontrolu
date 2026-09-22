@@ -17,7 +17,16 @@
 // detector.js is pure string/regex work with no DOM dependency, so it loads
 // fine in a service worker. The worker does not analyse anything — it needs
 // LIDDetector only to know which cached verdict shapes are still valid.
-importScripts('detector.js', 'queue.js');
+importScripts('detector.js', 'queue.js', 'upload.js');
+
+/**
+ * Where anonymous contributions go. Replace the host after deploying
+ * server/ (see server/README.md), and keep it under *.workers.dev so it
+ * matches the optional_host_permissions entry in manifest.json.
+ */
+const SHARE_ENDPOINT = 'https://lid-corpus.furkankus123.workers.dev/v1/submit';
+const SHARE_ORIGIN = 'https://*.workers.dev/*';
+const SHARE_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
 const { ThrottledQueue, RateLimitError } = LIDQueue;
 
@@ -84,6 +93,165 @@ const Cache = {
         };
     },
 };
+
+/* -----------------------------------------------------------------------------
+ * Corpus — labelled feedback and unknown vocabulary, gathered from ordinary
+ * browsing. Nothing here is ever transmitted; it exists so the user can export
+ * it and so the rules can be improved from real listings instead of guesses.
+ * -------------------------------------------------------------------------- */
+const CORPUS = {
+    FEEDBACK_KEY: 'lid_feedback_v1',
+    TERMS_KEY: 'lid_terms_v1',
+    PENDING_TERMS_KEY: 'lid_terms_pending_v1',
+    MAX_FEEDBACK: 1000,
+    MAX_TERMS: 3000,
+};
+
+const Corpus = {
+    async addFeedback(entry) {
+        const store = await chrome.storage.local.get(CORPUS.FEEDBACK_KEY);
+        const list = store[CORPUS.FEEDBACK_KEY] || [];
+
+        // One verdict per listing: a correction replaces an earlier opinion.
+        const next = list.filter((e) => e.url !== entry.url);
+        next.push(entry);
+
+        await chrome.storage.local.set({
+            [CORPUS.FEEDBACK_KEY]: next.slice(-CORPUS.MAX_FEEDBACK),
+        });
+    },
+
+    async addTerms(terms) {
+        if (!terms || !terms.length) return;
+        const store = await chrome.storage.local.get(CORPUS.TERMS_KEY);
+        const map = store[CORPUS.TERMS_KEY] || {};
+
+        for (const t of terms) {
+            const existing = map[t.term];
+            if (existing) {
+                existing.count += t.count;
+            } else {
+                map[t.term] = { count: t.count, example: t.example };
+            }
+        }
+
+        // Keep the most frequent; a long tail of typos is not worth storing.
+        const trimmed = Object.fromEntries(
+            Object.entries(map)
+                .sort((a, b) => b[1].count - a[1].count)
+                .slice(0, CORPUS.MAX_TERMS)
+        );
+        await chrome.storage.local.set({ [CORPUS.TERMS_KEY]: trimmed });
+    },
+
+    async read() {
+        const store = await chrome.storage.local.get([CORPUS.FEEDBACK_KEY, CORPUS.TERMS_KEY]);
+        return {
+            feedback: store[CORPUS.FEEDBACK_KEY] || [],
+            terms: store[CORPUS.TERMS_KEY] || {},
+        };
+    },
+
+    async clear() {
+        await chrome.storage.local.remove([
+            CORPUS.FEEDBACK_KEY, CORPUS.TERMS_KEY, CORPUS.PENDING_TERMS_KEY,
+        ]);
+    },
+
+    /** Terms not yet contributed. Kept apart from the cumulative local store so
+     *  a re-send cannot inflate the shared counts. */
+    async addPendingTerms(terms) {
+        const store = await chrome.storage.local.get(CORPUS.PENDING_TERMS_KEY);
+        const map = store[CORPUS.PENDING_TERMS_KEY] || {};
+        for (const t of terms) {
+            if (map[t.term]) map[t.term].count += t.count;
+            else map[t.term] = { count: t.count, example: t.example };
+        }
+        await chrome.storage.local.set({ [CORPUS.PENDING_TERMS_KEY]: map });
+    },
+
+    async pending() {
+        const store = await chrome.storage.local.get([CORPUS.FEEDBACK_KEY, CORPUS.PENDING_TERMS_KEY]);
+        const feedback = (store[CORPUS.FEEDBACK_KEY] || []).filter((e) => !e.shared);
+        const terms = Object.entries(store[CORPUS.PENDING_TERMS_KEY] || {})
+            .map(([term, v]) => ({ term, count: v.count, example: v.example }));
+        return { feedback, terms };
+    },
+
+    /** Marks everything just contributed, so it is never sent twice. */
+    async markShared(sharedFeedback) {
+        const store = await chrome.storage.local.get(CORPUS.FEEDBACK_KEY);
+        const seen = new Set(sharedFeedback.map((e) => e.at));
+        const list = (store[CORPUS.FEEDBACK_KEY] || [])
+            .map((e) => (seen.has(e.at) ? { ...e, shared: true } : e));
+        await chrome.storage.local.set({
+            [CORPUS.FEEDBACK_KEY]: list,
+            [CORPUS.PENDING_TERMS_KEY]: {},
+        });
+    },
+};
+
+/* -----------------------------------------------------------------------------
+ * Anonymous contribution — OFF unless the user turns it on.
+ *
+ * The extension's promise is that it sends nothing anywhere. This is the one
+ * exception, and it only applies after an explicit opt-in that also has to
+ * grant a host permission the default install does not hold. What leaves the
+ * machine is built by LIDUpload.buildPayload and checked by auditPayload
+ * immediately before the request; if the audit finds anything identifying, the
+ * upload is abandoned rather than sent.
+ * -------------------------------------------------------------------------- */
+let lastShareAttempt = 0;
+
+async function shareSettings() {
+    return chrome.storage.sync.get({ shareEnabled: false, shareTerms: true });
+}
+
+async function mayShare() {
+    const { shareEnabled } = await shareSettings();
+    if (!shareEnabled) return false;
+    if (SHARE_ENDPOINT.includes('CHANGE-ME')) return false;
+    return chrome.permissions.contains({ origins: [SHARE_ORIGIN] });
+}
+
+async function maybeShare(force = false) {
+    if (!force && Date.now() - lastShareAttempt < SHARE_MIN_INTERVAL_MS) return null;
+    if (!(await mayShare())) return null;
+    lastShareAttempt = Date.now();
+
+    const { shareTerms } = await shareSettings();
+    const { feedback, terms } = await Corpus.pending();
+    if (feedback.length === 0 && (!shareTerms || terms.length === 0)) return null;
+
+    const payload = LIDUpload.buildPayload({
+        feedback,
+        terms,
+        includeTerms: shareTerms,
+        version: chrome.runtime.getManifest().version,
+    });
+
+    const problems = LIDUpload.auditPayload(payload);
+    if (problems.length) {
+        console.error('[LID] upload aborted, payload failed audit:', problems);
+        return { ok: false, error: 'audit failed' };
+    }
+    if (payload.items.length === 0) return null;
+
+    try {
+        const res = await fetch(SHARE_ENDPOINT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+
+        await Corpus.markShared(feedback);
+        return { ok: true, sent: payload.items.length };
+    } catch (err) {
+        // Offline or blocked: keep the data and try again later.
+        return { ok: false, error: err.message };
+    }
+}
 
 /* -----------------------------------------------------------------------------
  * Ports — one per results tab
@@ -170,6 +338,17 @@ chrome.runtime.onConnect.addListener((port) => {
                 return;
             }
 
+            /* Corpus from ordinary browsing ------------------------------- */
+            case 'feedback':
+                await Corpus.addFeedback(msg.entry);
+                maybeShare();          // no await: the tab must not wait on a network call
+                return;
+
+            case 'terms':
+                await Corpus.addTerms(msg.terms);
+                await Corpus.addPendingTerms(msg.terms);
+                return;
+
             /* Keepalive: stops Chrome idling the worker out mid-queue ----- */
             case 'ping':
                 safePost(port, { type: 'pong' });
@@ -204,6 +383,49 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
     if (msg.type === 'clear-cache') {
         Cache.clear().then(() => sendResponse({ ok: true }));
+        return true;
+    }
+    if (msg.type === 'corpus-stats') {
+        Corpus.read().then(({ feedback, terms }) => sendResponse({
+            feedback: feedback.length,
+            wrong: feedback.filter((e) => e.label === 'wrong').length,
+            terms: Object.keys(terms).length,
+        }));
+        return true;
+    }
+    if (msg.type === 'corpus-export') {
+        Corpus.read().then(({ feedback, terms }) => sendResponse({
+            exportedAt: new Date().toISOString(),
+            extensionVersion: chrome.runtime.getManifest().version,
+            feedback,
+            // Most frequent first: that is the order worth reading.
+            unknownTerms: Object.entries(terms)
+                .map(([term, v]) => ({ term, count: v.count, example: v.example }))
+                .sort((a, b) => b.count - a.count),
+        }));
+        return true;
+    }
+    if (msg.type === 'corpus-clear') {
+        Corpus.clear().then(() => sendResponse({ ok: true }));
+        return true;
+    }
+    if (msg.type === 'share-now') {
+        maybeShare(true).then((r) => sendResponse(r || { ok: false, error: 'nothing to send' }));
+        return true;
+    }
+    if (msg.type === 'share-preview') {
+        // Shows the user the exact bytes that would leave their machine.
+        Promise.all([shareSettings(), Corpus.pending()]).then(([s, p]) => sendResponse({
+            enabled: s.shareEnabled,
+            configured: !SHARE_ENDPOINT.includes('CHANGE-ME'),
+            pending: p.feedback.length + (s.shareTerms ? p.terms.length : 0),
+            payload: LIDUpload.buildPayload({
+                feedback: p.feedback.slice(0, 3),
+                terms: s.shareTerms ? p.terms.slice(0, 3) : [],
+                includeTerms: s.shareTerms,
+                version: chrome.runtime.getManifest().version,
+            }),
+        }));
         return true;
     }
     return false;

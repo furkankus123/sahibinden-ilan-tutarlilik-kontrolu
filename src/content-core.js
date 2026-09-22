@@ -32,6 +32,10 @@
             showProgressBadges = true,
             css = null,
             debug = false,
+            // Supplied by the glue: the extension writes to chrome.storage via
+            // its service worker, the userscript to GM storage. Defaults to a
+            // no-op so the tests can run content-core without any storage.
+            recordFeedback = () => {},
         } = options;
 
         const Detector = globalThis.LIDDetector;
@@ -140,6 +144,10 @@
         function setBadge(job, variant, label, tooltip = '') {
             if (!FINDING_VARIANTS.includes(variant) && !showProgressBadges) return;
 
+            // A finding replaces any progress badge wholesale, because it is a
+            // different element (a button plus its details panel).
+            job.row.querySelector('.lid-finding')?.remove();
+
             let badge = job.row.querySelector('.lid-badge');
             if (!badge) {
                 badge = document.createElement('span');
@@ -148,6 +156,176 @@
             badge.className = `lid-badge lid-badge--${variant}`;
             badge.textContent = label;
             badge.title = tooltip;
+        }
+
+        /**
+         * Renders a finding as a collapsed chip that expands on click.
+         *
+         * The reasons used to live in a `title` tooltip, which meant they were
+         * invisible until hovered, could not be read on a touch screen, and
+         * vanished the moment the pointer moved. A chip that stays put and
+         * opens in place is readable, scannable down a column of results, and
+         * lets a buyer compare two listings without chasing tooltips.
+         */
+        /**
+         * "Bu karar doğru / yanlış" buttons.
+         *
+         * A verdict the tool cannot be corrected on is a verdict nobody can
+         * improve. Each click stores one labelled example locally — the raw
+         * material for fixing the vocabulary, and the only way to ever train
+         * something better than hand-written rules.
+         */
+        function buildFeedbackRow(job, result) {
+            const row = document.createElement('div');
+            row.className = 'lid-feedback';
+
+            const label = document.createElement('span');
+            label.textContent = 'Bu karar doğru mu?';
+            row.appendChild(label);
+
+            const done = (verdictText) => {
+                row.textContent = verdictText;
+                row.classList.add('lid-feedback--done');
+            };
+
+            for (const [key, text] of [['correct', '✓ Doğru'], ['wrong', '✗ Yanlış']]) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = `lid-fb lid-fb--${key}`;
+                b.textContent = text;
+                b.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try {
+                        recordFeedback({
+                            label: key,
+                            url: job.key,
+                            title: job.title,
+                            status: result.status,
+                            severity: result.severity || null,
+                            reasons: result.reasons || [],
+                            // The sentences behind the verdict. Kept locally for
+                            // the user's own export, and the only part that is
+                            // ever eligible for upload (see src/upload.js).
+                            snippets: (result.evidence || []).map((e) => e.snippet),
+                            at: new Date().toISOString(),
+                        });
+                        done('Teşekkürler, kaydedildi.');
+                    } catch (err) {
+                        warn('feedback failed:', err && err.message);
+                        done('Kaydedilemedi.');
+                    }
+                });
+                row.appendChild(b);
+            }
+            return row;
+        }
+
+        function renderFinding(job, result, paintOnly) {
+            job.row.querySelector('.lid-badge')?.remove();
+            job.row.querySelector('.lid-finding')?.remove();
+
+            const reasons = (result.reasons && result.reasons.length)
+                ? result.reasons
+                : Detector.evidenceWords(result.evidence);
+
+            const wrap = document.createElement('span');
+            wrap.className = 'lid-finding';
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `lid-badge lid-badge--${paintOnly ? 'paint' : 'danger'}`;
+            btn.setAttribute('aria-expanded', 'false');
+
+            const head = document.createElement('span');
+            head.textContent = `${paintOnly ? LABELS.paint : LABELS.major} · ${reasons[0]}`
+                + (reasons.length > 1 ? ` +${reasons.length - 1}` : '');
+
+            const caret = document.createElement('span');
+            caret.className = 'lid-caret';
+            caret.textContent = '⊕';
+
+            btn.append(head, caret);
+
+            const panel = document.createElement('div');
+            panel.className = 'lid-details';
+            panel.hidden = true;
+
+            const claim = document.createElement('div');
+            claim.className = 'lid-details__claim';
+            claim.textContent = `Başlıkta: ${result.cleanHits.join(', ')}`;
+            panel.appendChild(claim);
+
+            const list = document.createElement('ul');
+            list.className = 'lid-details__list';
+            for (const e of result.evidence) {
+                const li = document.createElement('li');
+                const what = document.createElement('b');
+                what.textContent = e.reason || e.keyword;
+                const quote = document.createElement('span');
+                quote.className = 'lid-details__quote';
+                quote.textContent = e.snippet;
+                li.append(what, quote);
+                list.appendChild(li);
+            }
+            panel.appendChild(list);
+            panel.appendChild(buildFeedbackRow(job, result));
+
+            // The row is a link; without this the click navigates away.
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const open = panel.hidden;
+                panel.hidden = !open;
+                btn.setAttribute('aria-expanded', String(open));
+                caret.textContent = open ? '⊖' : '⊕';
+                // Collapsed it sits inline after the title; open it needs the
+                // full row width, otherwise the panel is pushed to the right
+                // of the title and wraps awkwardly.
+                wrap.classList.toggle('lid-finding--open', open);
+            });
+
+            wrap.append(btn, panel);
+            job.titleLink.insertAdjacentElement('afterend', wrap);
+        }
+
+        /** The "✓ tutarlı" chip: no reasons to list, but still correctable. */
+        function renderConsistent(job, result) {
+            if (!showProgressBadges) return;
+
+            job.row.querySelector('.lid-badge')?.remove();
+            job.row.querySelector('.lid-finding')?.remove();
+
+            const wrap = document.createElement('span');
+            wrap.className = 'lid-finding';
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'lid-badge lid-badge--ok';
+            btn.setAttribute('aria-expanded', 'false');
+            btn.textContent = LABELS.ok + ' ⊕';
+
+            const panel = document.createElement('div');
+            panel.className = 'lid-details lid-details--ok';
+            panel.hidden = true;
+
+            const note = document.createElement('div');
+            note.className = 'lid-details__claim';
+            note.textContent = 'Açıklamada çelişkili ifade bulunamadı.';
+            panel.append(note, buildFeedbackRow(job, result));
+
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const open = panel.hidden;
+                panel.hidden = !open;
+                btn.setAttribute('aria-expanded', String(open));
+                btn.textContent = LABELS.ok + (open ? ' ⊖' : ' ⊕');
+                wrap.classList.toggle('lid-finding--open', open);
+            });
+
+            wrap.append(btn, panel);
+            job.titleLink.insertAdjacentElement('afterend', wrap);
         }
 
         function renderResult(job, result) {
@@ -162,28 +340,18 @@
                     // never downgrade a warning we cannot re-derive.
                     const paintOnly = result.severity === 'paint';
 
-                    // The words that produced the verdict, shown inline: a buyer
-                    // should know WHY a row is flagged without hovering it.
-                    const words = (result.words && result.words.length
-                        ? result.words
-                        : Detector.evidenceWords(result.evidence)).join(', ');
-
                     job.row.classList.add(paintOnly ? 'lid-paint' : 'lid-inconsistent');
                     applyRowBackground(job.row, ROW_BACKGROUNDS[paintOnly ? 'paint' : 'major']);
                     job.titleLink.classList.add('lid-strike', paintOnly ? 'lid-strike--paint' : 'lid-strike--major');
 
-                    const details = result.evidence.map((e) => `• ${e.keyword}: ${e.snippet}`).join('\n');
-                    setBadge(
-                        job,
-                        paintOnly ? 'paint' : 'danger',
-                        `${paintOnly ? LABELS.paint : LABELS.major} · ${words}`,
-                        `Başlıkta: ${result.cleanHits.join(', ')}\n\n`
-                        + `Açıklamada bulunanlar:\n${details}`
-                    );
+                    renderFinding(job, result, paintOnly);
                     break;
                 }
                 case 'consistent':
-                    setBadge(job, 'ok', LABELS.ok, 'Açıklamada çelişkili ifade bulunamadı.');
+                    // Also expandable, because a MISSED deceitful listing is the
+                    // costlier error and the only way to hear about one is to
+                    // let the user say so here.
+                    renderConsistent(job, result);
                     break;
                 case 'no-description':
                     setBadge(job, 'error', LABELS.noDescription, 'İlan sayfasında açıklama bulunamadı.');

@@ -39,8 +39,10 @@
 <div id="summary">running…</div>
 <div id="out"></div>
 
+<script src="../src/lexicon.js"></script>
 <script src="../src/detector.js"></script>
 <script src="../src/site-adapters.js"></script>
+<script src="../src/upload.js"></script>
 <script>
 /* ---------------------------------------------------------------------------
  * Tiny test harness
@@ -293,6 +295,170 @@ expectOk('Aracımız boyasızdır.',                'bare "boya" must not fire i
 // Severity must stay PAINT for these — they are cosmetic, not structural.
 expectSeverity('2 parça boya var.',   'paint', 'bare boya is the paint tier');
 expectSeverity('4 parça boya, motor kaputu değişen.', 'major', 'paint + replaced part');
+
+/* =========================================================================
+ * 9. SLOT EXTRACTION — which panel, how many
+ *
+ * A bare keyword is a poor explanation. These assert the readable reason
+ * lines the expandable badge shows, built from lexicon.js.
+ * ====================================================================== */
+section('9. Slot extraction — readable reasons');
+
+function expectReasons(desc, expected, note = '') {
+  const got = LIDDetector.analyze(CLEAN_TITLE, desc).reasons;
+  const ok = JSON.stringify(got) === JSON.stringify(expected);
+  report(ok, `${note ? note + ' → ' : ''}"${desc}"`, `expected [${expected}], got [${got}]`);
+}
+
+expectReasons('Sağ çamurluk boyalı.',              ['sağ çamurluk boyalı'], 'position + part');
+expectReasons('Sol ön kapı boyalı.',               ['sol ön kapı boyalı'],  'two-word position');
+expectReasons('Sadece arka tamponda lokal boya mevcut.', ['arka tampon lokal boyalı'], 'suffix on part');
+expectReasons('Motor kaputu değişen.',             ['kaput değişen'],       'nearest part wins');
+expectReasons('2 parça boya var.',                 ['2 parça boyalı'],      'digit count');
+expectReasons('İki bölge boya yapılmış.',          ['2 bölge boyalı'],      'Turkish number word');
+expectReasons('Tramer kaydı bulunmaktadır.',       ['tramer kaydı'],        'standalone phrasing');
+expectReasons('Ön tamponda sürtme var.',           ['ön tampon sürtme'],    'part + action');
+
+report(
+  LIDDetector.analyze(CLEAN_TITLE, 'Sol ön çamurluk boyalı, bagaj kapağı değişen.').reasons.length === 2,
+  'separate clauses produce separate reasons'
+);
+
+report(
+  LIDDetector.analyze(CLEAN_TITLE, 'Ön kapı boyalı. Ön kapı boyalı.').reasons.length === 1,
+  'duplicate reasons are collapsed for display'
+);
+
+report(
+  LIDDetector.analyze(CLEAN_TITLE, 'Arka tampon boyalı.').evidence[0].reason === 'arka tampon boyalı',
+  'each evidence item carries its own reason'
+);
+
+/* =========================================================================
+ * 10. CORPUS HARVESTING
+ *
+ * Collects words we do not understand that share a clause with a damage
+ * keyword — the place a missing vocabulary entry hides. Gathered from
+ * listings the user browses anyway; nothing here issues a request.
+ * ====================================================================== */
+section('10. Corpus harvesting');
+
+const terms = (t) => LIDDetector.harvestTerms(t).map((x) => x.term);
+
+report(terms('Ön panelde göçük var, boyalı.').includes('gocuk'),
+  'an unknown damage word next to a keyword is collected',
+  `got [${terms('Ön panelde göçük var, boyalı.')}]`);
+
+report(!terms('Ön tampon boyalı.').includes('tampon'),
+  'known part names are not collected',
+  `got [${terms('Ön tampon boyalı.')}]`);
+
+report(!terms('Aracımız tramersiz ve boyasızdır.').some((t) => ['ve', 'aracimiz'].includes(t)),
+  'stopwords are not collected',
+  `got [${terms('Aracımız tramersiz ve boyasızdır.')}]`);
+
+report(LIDDetector.harvestTerms('Motor bakımlı, lastikler yeni.').length === 0,
+  'a clause with no damage keyword yields nothing',
+  `got [${terms('Motor bakımlı, lastikler yeni.')}]`);
+
+const harvested = LIDDetector.harvestTerms('Sağ kapıda ezik var, boyalı. Sol kapıda ezik var, boyalı.');
+const ezik = harvested.find((t) => t.term === 'ezik');
+report(!!ezik && ezik.count === 2 && ezik.example.length > 0,
+  'repeats are counted and an example clause is kept',
+  `got ${JSON.stringify(ezik)}`);
+
+report(LIDDetector.harvestTerms('').length === 0, 'empty input is safe');
+
+report(!terms('Tramer kaydı bulunmaktadır.').includes('kaydi'),
+  'the second word of a multi-word keyword counts as known',
+  `got [${terms('Tramer kaydı bulunmaktadır.')}]`);
+
+/* =========================================================================
+ * 11. UPLOAD PRIVACY BOUNDARY
+ *
+ * buildPayload() decides what may leave the machine. These are the tests
+ * that matter most in the whole file: a mistake here is not a wrong badge,
+ * it is a privacy breach shipped to every user.
+ * ====================================================================== */
+section('11. Upload privacy boundary');
+
+const U = LIDUpload;
+
+// A realistic local record: it holds url/title for the user's own export.
+const localEntry = {
+  label: 'wrong',
+  status: 'inconsistent',
+  severity: 'paint',
+  reasons: ['2 parça boyalı'],
+  snippets: ['…2 parca boyali, tramer kaydi yoktur…'],
+  url: 'https://www.sahibinden.com/ilan/otomobil-passat-1234567/detay',
+  title: 'Hatasız Boyasız 2019 Passat',
+  at: '2026-09-22T00:00:00.000Z',
+};
+
+const payload = U.buildPayload({ feedback: [localEntry], terms: [], version: '2.1.0' });
+const asText = JSON.stringify(payload);
+
+report(!asText.includes('sahibinden'), 'the listing URL never reaches the payload');
+report(!asText.includes('Passat'), 'the listing title never reaches the payload');
+report(!('url' in payload.items[0]) && !('title' in payload.items[0]),
+  'no url/title keys survive the allow-list');
+report(payload.items[0].sentences[0].includes('boyali'),
+  'the sentence that produced the verdict IS sent — that is the point');
+report(U.auditPayload(payload).length === 0,
+  'the finished payload passes its own audit',
+  `problems: ${U.auditPayload(payload)}`);
+
+// A field added to the local store later must not leak by being forgotten.
+const withNewField = U.buildPayload({
+  feedback: [{ ...localEntry, userEmail: 'furkan@example.com', deviceId: 'abc-123' }],
+  version: '2.1.0',
+});
+report(!JSON.stringify(withNewField).includes('example.com')
+    && !JSON.stringify(withNewField).includes('abc-123'),
+  'unknown fields are dropped (allow-list, not deny-list)');
+
+/* --- scrubbing free text ------------------------------------------------ */
+report(U.scrub('Bilgi için 0532 111 22 33 arayınız') === 'Bilgi için [numara] arayınız',
+  'phone numbers are masked',
+  `got "${U.scrub('Bilgi için 0532 111 22 33 arayınız')}"`);
+
+report(U.scrub('iletisim: satici@mail.com') === 'iletisim: [eposta]',
+  'e-mail addresses are masked',
+  `got "${U.scrub('iletisim: satici@mail.com')}"`);
+
+report(U.scrub('Detay: www.ornek.com/ilan') === 'Detay: [link]',
+  'links are masked',
+  `got "${U.scrub('Detay: www.ornek.com/ilan')}"`);
+
+report(U.scrub('Plaka 34 ABC 123 temiz').includes('[plaka]'),
+  'Turkish plates are masked',
+  `got "${U.scrub('Plaka 34 ABC 123 temiz')}"`);
+
+report(U.scrub('2 parça boyalı, tramer yok') === '2 parça boyalı, tramer yok',
+  'ordinary damage text is left intact — scrubbing must not destroy the signal');
+
+/* --- terms and limits --------------------------------------------------- */
+const termPayload = U.buildPayload({
+  feedback: [],
+  terms: [{ term: 'göçük', count: 3, example: 'on panelde gocuk var, boyali' }],
+  version: '2.1.0',
+});
+report(termPayload.items[0].kind === 'term' && termPayload.items[0].term === 'göçük',
+  'unknown vocabulary is included when asked for');
+
+report(U.buildPayload({ feedback: [], terms: [{ term: 'x', count: 1 }], includeTerms: false })
+  .items.length === 0, 'terms are omitted when the user opted out of them');
+
+report(U.buildPayload({
+  feedback: Array.from({ length: 500 }, () => localEntry), version: '1',
+}).items.length <= U.LIMITS.MAX_ITEMS, 'payload size is capped');
+
+report(U.buildPayload({ feedback: [{ label: 'bogus', status: 'inconsistent' }] }).items.length === 0,
+  'an invalid label is rejected rather than forwarded');
+
+report(U.auditPayload({ items: [{ url: 'x' }] }).length > 0,
+  'the audit catches a forbidden field if one ever appears');
 
 /* =========================================================================
  * SUMMARY

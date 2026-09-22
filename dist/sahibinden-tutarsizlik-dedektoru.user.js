@@ -2,7 +2,7 @@
 // @name         Sahibinden Tutarsızlık Dedektörü
 // @name:en      Sahibinden Listing Inconsistency Detector
 // @namespace    https://github.com/Furkankus123/sahibinden-ilan-tutarlilik-kontrolu
-// @version      2.0.0
+// @version      2.1.0
 // @description  Başlıkta "hatasız / boyasız / değişensiz / tramersiz" yazan, ancak ilan açıklamasında boya, değişen parça veya hasar kaydı geçen ilanları işaretler.
 // @description:en  Flags car listings whose titles claim "hatasız / boyasız / değişensiz / tramersiz" while the detail description mentions paint, replaced parts or damage records.
 // @author       Furkankus123
@@ -16,6 +16,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -24,6 +25,103 @@
 // GENERATED FILE — do not edit.
 // Built from src/ by build.ps1. Edit the sources and rebuild instead.
 // -----------------------------------------------------------------------------
+
+
+/* ===== src/lexicon.js ===================================================== */
+
+/* =============================================================================
+ * lexicon.js — Turkish car-listing vocabulary for slot extraction
+ *
+ * detector.js answers "is there damage evidence here, and is it negated?".
+ * This file supplies the vocabulary needed to answer the next question:
+ * WHAT was damaged, and HOW MUCH. That turns a bare keyword hit ("boyalı")
+ * into a reason a human can read ("ön kapı boyalı", "2 parça boya").
+ *
+ * All entries are written ASCII-folded, matching LIDDetector.normalize():
+ * ç->c, ğ->g, ı->i, ö->o, ş->s, ü->u.
+ * ========================================================================== */
+
+(function (root, factory) {
+    const api = factory();
+    if (typeof module === 'object' && module.exports) module.exports = api;
+    root.LIDLexicon = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    /**
+     * Body panels and components a seller names when disclosing damage.
+     * `label` is the display spelling; `stem` is what we match, deliberately
+     * cut before the Turkish suffix so "kapida", "kapisi", "kapinin" all hit
+     * the same entry. Longer stems are tried first so "on kapi" wins over "kapi".
+     */
+    const PARTS = [
+        { stem: 'marspiyel',  label: 'marşpiyel' },
+        { stem: 'camurluk',   label: 'çamurluk' },
+        { stem: 'davlumbaz',  label: 'davlumbaz' },
+        { stem: 'tampon',     label: 'tampon' },
+        { stem: 'kaput',      label: 'kaput' },
+        { stem: 'bagaj',      label: 'bagaj' },
+        { stem: 'tavan',      label: 'tavan' },
+        { stem: 'kapi',       label: 'kapı' },
+        { stem: 'ceyrek',     label: 'çeyrek panel' },
+        { stem: 'panel',      label: 'panel' },
+        { stem: 'direk',      label: 'direk' },
+        { stem: 'far',        label: 'far' },
+        { stem: 'ayna',       label: 'ayna' },
+        { stem: 'kapak',      label: 'kapak' },
+        { stem: 'sacak',      label: 'saçak' },
+        { stem: 'motor',      label: 'motor' },
+        { stem: 'sasi',       label: 'şasi' },
+    ];
+
+    /**
+     * Position words that qualify a part: "ön kapı", "sağ arka çamurluk".
+     * Kept separate from PARTS so they can combine freely.
+     */
+    const POSITIONS = [
+        { stem: 'sag on',  label: 'sağ ön' },
+        { stem: 'sag arka', label: 'sağ arka' },
+        { stem: 'sol on',  label: 'sol ön' },
+        { stem: 'sol arka', label: 'sol arka' },
+        { stem: 'on',      label: 'ön' },
+        { stem: 'arka',    label: 'arka' },
+        { stem: 'sag',     label: 'sağ' },
+        { stem: 'sol',     label: 'sol' },
+    ];
+
+    /** Turkish number words, so "iki parça boya" reads as well as "2 parça boya". */
+    const NUMBER_WORDS = {
+        bir: 1, iki: 2, uc: 3, dort: 4, bes: 5,
+        alti: 6, yedi: 7, sekiz: 8, dokuz: 9, on: 10,
+    };
+
+    /** Counting units that follow a number: "2 parça", "3 adet", "bir bölge". */
+    const COUNT_UNITS = ['parca', 'adet', 'bolge', 'nokta', 'yer'];
+
+    /**
+     * How each damage keyword should be phrased in a reason line.
+     * Without this "boya" would render as "ön kapı boya" instead of
+     * "ön kapı boyalı".
+     */
+    const KEYWORD_PHRASING = {
+        'boya':        'boyalı',
+        'boyalı':      'boyalı',
+        'lokal boya':  'lokal boyalı',
+        'değişen':     'değişen',
+        'tramer':      'tramer kaydı',
+        'hasar kaydı': 'hasar kaydı',
+        'çarpma':      'çarpma',
+        'sürtme':      'sürtme',
+    };
+
+    /**
+     * Whole-phrase readings that beat the generic "part + keyword" assembly.
+     * These are the cases where a literal assembly would read badly.
+     */
+    const STANDALONE = ['tramer', 'hasar kaydı'];
+
+    return { PARTS, POSITIONS, NUMBER_WORDS, COUNT_UNITS, KEYWORD_PHRASING, STANDALONE };
+});
 
 
 /* ===== src/detector.js ==================================================== */
@@ -78,8 +176,9 @@
      *   1 — status, cleanHits, evidence[{keyword, snippet}]
      *   2 — adds severity, words[], evidence[].severity
      *   3 — adds bare "boya" keyword + NEUTRAL_BEFORE/AFTER rules
+     *   4 — adds evidence[].reason and reasons[] from slot extraction
      */
-    const RESULT_SCHEMA = 3;
+    const RESULT_SCHEMA = 4;
 
     const KEYWORDS = {
         // Title claims that the car is clean.
@@ -342,10 +441,114 @@
         return matches;
     }
 
+    /* -------------------------------------------------------------------------
+     * SLOT EXTRACTION
+     *
+     * A keyword hit alone ("boyalı") is a poor explanation. These functions read
+     * the clause around the hit for the two things a buyer actually wants —
+     * WHICH panel and HOW MANY — and assemble a readable reason from them.
+     * The vocabulary lives in lexicon.js.
+     * ---------------------------------------------------------------------- */
+
+    const Lex = () => (typeof globalThis !== 'undefined' ? globalThis.LIDLexicon : null);
+
+    /** The sentence containing `pos`, as [start, end). Commas do not split it. */
+    function sentenceBounds(text, pos) {
+        const before = text.slice(0, pos);
+        let start = 0;
+        for (const ch of ['.', '!', '?', ';', '\n']) {
+            start = Math.max(start, before.lastIndexOf(ch) + 1);
+        }
+        const rel = text.slice(pos).search(/[.!?;\n]/);
+        return [start, rel === -1 ? text.length : pos + rel];
+    }
+
+    /** The clause containing `pos`, as [start, end). Commas DO split it. */
+    function clauseBounds(text, pos) {
+        const before = text.slice(0, pos);
+        let start = 0;
+        for (const ch of ['.', '!', '?', ';', '\n', ',']) {
+            start = Math.max(start, before.lastIndexOf(ch) + 1);
+        }
+        const rel = text.slice(pos).search(/[.!?;\n,]/);
+        return [start, rel === -1 ? text.length : pos + rel];
+    }
+
+    /** Nearest part name to the match, plus any position word qualifying it. */
+    function findPart(clause, matchAt) {
+        const lex = Lex();
+        if (!lex) return null;
+
+        let best = null;
+        for (const part of lex.PARTS) {
+            const re = new RegExp(WORD_START + escapeRegExp(part.stem), 'g');
+            let m;
+            while ((m = re.exec(clause)) !== null) {
+                const distance = Math.abs(m.index - matchAt);
+                if (!best || distance < best.distance) {
+                    best = { part, at: m.index, distance };
+                }
+            }
+        }
+        if (!best) return null;
+
+        // A position word immediately before the part: "sağ ön çamurluk".
+        const lead = clause.slice(Math.max(0, best.at - 12), best.at);
+        for (const pos of lex.POSITIONS) {
+            if (new RegExp(`${WORD_START}${escapeRegExp(pos.stem)}\\s*$`).test(lead)) {
+                return `${pos.label} ${best.part.label}`;
+            }
+        }
+        return best.part.label;
+    }
+
+    /** A count expressed as digits or a Turkish number word: "2 parça", "iki bölge". */
+    function findCount(clause) {
+        const lex = Lex();
+        if (!lex) return null;
+
+        const units = lex.COUNT_UNITS.map(escapeRegExp).join('|');
+        const words = Object.keys(lex.NUMBER_WORDS).map(escapeRegExp).join('|');
+        const re = new RegExp(`${WORD_START}(\\d{1,2}|${words})\\s*(${units})`, 'i');
+
+        const m = re.exec(clause);
+        if (!m) return null;
+
+        const n = /^\d+$/.test(m[1]) ? Number(m[1]) : lex.NUMBER_WORDS[m[1]];
+        if (!n) return null;
+
+        // Display the unit the seller used, in its original spelling.
+        const unit = { parca: 'parça', adet: 'adet', bolge: 'bölge', nokta: 'nokta', yer: 'yer' }[m[2]] || m[2];
+        return `${n} ${unit}`;
+    }
+
+    /**
+     * Assembles the human-readable reason for one finding, e.g.
+     *   "ön kapı boyalı", "2 parça boyalı", "tramer kaydı"
+     */
+    function buildReason(text, m) {
+        const lex = Lex();
+        const phrase = (lex && lex.KEYWORD_PHRASING[m.keyword]) || m.keyword;
+
+        // "tramer kaydı" reads badly with a panel glued in front of it.
+        if (lex && lex.STANDALONE.includes(m.keyword)) return phrase;
+
+        const [cs, ce] = clauseBounds(text, m.start);
+        const clause = text.slice(cs, ce);
+
+        const part = findPart(clause, m.start - cs);
+        if (part) return `${part} ${phrase}`;
+
+        const count = findCount(clause);
+        if (count) return `${count} ${phrase}`;
+
+        return phrase;
+    }
+
     /**
      * Finds non-negated damage evidence in a description.
      * @param {string} rawText raw description text
-     * @returns {Array<{keyword: string, snippet: string}>}
+     * @returns {Array<{keyword: string, severity: string, reason: string, snippet: string}>}
      */
     function findDamageEvidence(rawText) {
         const text = normalize(rawText);
@@ -356,6 +559,7 @@
             .map((m) => ({
                 keyword: m.keyword,
                 severity: m.severity,
+                reason: buildReason(text, m),
                 snippet: '…' + text
                     .slice(Math.max(0, m.start - 30), Math.min(text.length, m.end + 40))
                     .replace(/\n/g, ' ') + '…',
@@ -391,7 +595,7 @@
      */
     function analyze(title, description) {
         const cleanHits = findCleanKeywords(title);
-        const empty = { schema: RESULT_SCHEMA, severity: null, cleanHits, evidence: [], words: [] };
+        const empty = { schema: RESULT_SCHEMA, severity: null, cleanHits, evidence: [], words: [], reasons: [] };
 
         if (cleanHits.length === 0) return { status: 'not-a-claim', ...empty };
         if (!description) return { status: 'no-description', ...empty };
@@ -406,12 +610,102 @@
             cleanHits,
             evidence,
             words: evidenceWords(evidence),
+            // Distinct, display-ready reason lines, in the order they appear in
+            // the description. This is what the expandable badge renders.
+            reasons: [...new Set(evidence.map((e) => e.reason))],
         };
     }
 
     /** True when a cached verdict was produced by this version of the shape. */
     function isCurrentSchema(result) {
         return !!result && result.schema === RESULT_SCHEMA;
+    }
+
+    /* -------------------------------------------------------------------------
+     * CORPUS HARVESTING
+     *
+     * Every listing the user browses is free evidence about how Turkish sellers
+     * actually phrase damage. This collects the words we do NOT yet understand
+     * that sit in the same clause as a damage keyword — the exact place a
+     * missing vocabulary entry would hide.
+     *
+     * It reads text already fetched for analysis. It never issues a request,
+     * and it is the reason this works from ordinary browsing instead of a crawl.
+     * ---------------------------------------------------------------------- */
+
+    // Function words that carry no vocabulary signal.
+    const STOPWORDS = new Set([
+        've', 'ile', 'veya', 'ya', 'da', 'de', 'ki', 'ise', 'ama', 'fakat', 'ancak',
+        'bir', 'bu', 'su', 'o', 'her', 'hic', 'tum', 'tumu', 'hepsi', 'diger', 'digeri',
+        'icin', 'gibi', 'kadar', 'sonra', 'once', 'uzeri', 'uzerine', 'ayrica',
+        'olarak', 'olan', 'olup', 'oldugu', 'edilmis', 'edilmistir', 'yapilan',
+        'arac', 'aracin', 'aracimiz', 'araba', 'oto', 'otomobil', 'model', 'km',
+        'sahibinden', 'satilik', 'fiyat', 'tl', 'not', 'bilgi', 'lutfen', 'ilgilenen',
+        'tertemiz', 'temiz', 'bakimli', 'garanti', 'servis', 'ekspertiz', 'rapor',
+        'degisim', 'takas', 'kredi', 'senet', 'pesin', 'anahtar', 'ruhsat',
+    ]);
+
+    /** Known stems, so "tamponda" and "kaputu" count as understood. */
+    function knownStems() {
+        const lex = Lex();
+        const stems = [
+            ...CLEAN_NORM,
+            ...DAMAGE_NORM,
+            ...NEGATION_WORDS, ...AFFIRMATION_WORDS,
+            ...NEUTRAL_BEFORE, ...NEUTRAL_AFTER,
+            ...QUANTIFIER_WORDS,
+        ].map((w) => normalize(w));
+
+        if (lex) {
+            stems.push(
+                ...lex.PARTS.map((p) => p.stem),
+                ...lex.POSITIONS.map((p) => p.stem),
+                ...lex.COUNT_UNITS,
+                ...Object.keys(lex.NUMBER_WORDS)
+            );
+        }
+        // Split multi-word stems into their parts. Keeping only the first word
+        // left "kaydı" (from "tramer kaydı") looking unknown, which polluted
+        // every harvest with a word we already understand.
+        return stems
+            .flatMap((s) => s.split(' '))
+            .filter((s) => s.length >= 2);
+    }
+
+    let STEM_CACHE = null;
+
+    function isKnownToken(token) {
+        if (STOPWORDS.has(token)) return true;
+        if (!STEM_CACHE) STEM_CACHE = knownStems();
+        return STEM_CACHE.some((stem) => token.startsWith(stem));
+    }
+
+    /**
+     * Unknown words sharing a clause with a damage keyword.
+     * @returns {Array<{term: string, count: number, example: string}>}
+     */
+    function harvestTerms(rawText) {
+        const text = normalize(rawText);
+        const found = new Map();
+
+        for (const m of collectMatches(text)) {
+            // Sentence scope, NOT clauseBounds: that one also splits on commas,
+            // which would drop "göçük var" from "göçük var, boyalı" — precisely
+            // the neighbouring word we are trying to discover.
+            const [cs, ce] = sentenceBounds(text, m.start);
+            const clause = text.slice(cs, ce).trim();
+
+            for (const token of clause.split(/[^a-z0-9]+/)) {
+                if (token.length < 3 || /^\d/.test(token)) continue;
+                if (isKnownToken(token)) continue;
+
+                const entry = found.get(token)
+                    || { term: token, count: 0, example: clause.slice(0, 140) };
+                entry.count++;
+                found.set(token, entry);
+            }
+        }
+        return [...found.values()];
     }
 
     return {
@@ -421,6 +715,7 @@
         KEYWORDS,
         TUNING,
         normalize,
+        harvestTerms,
         findCleanKeywords,
         findDamageEvidence,
         worstSeverity,
@@ -726,6 +1021,186 @@
 });
 
 
+/* ===== src/upload.js ====================================================== */
+
+/* =============================================================================
+ * upload.js — decides exactly what may leave the user's machine
+ *
+ * This file is the privacy boundary. Everything the extension would ever send
+ * to the shared corpus passes through buildPayload(), and buildPayload() is a
+ * pure function so it can be tested exhaustively without a network.
+ *
+ * Two rules it exists to enforce:
+ *
+ *   1. ALLOW-LIST, never deny-list. Fields are copied out one by one. A field
+ *      added to the local store later — a URL, a title, a user id — cannot leak
+ *      by being forgotten, because nothing is copied unless it is named here.
+ *
+ *   2. SCRUB the free text. Seller descriptions routinely contain phone
+ *      numbers, plates and e-mail addresses. "Anonymous" is not a property of
+ *      the transport; it has to be done to the text itself.
+ * ========================================================================== */
+
+(function (root, factory) {
+    const api = factory();
+    if (typeof module === 'object' && module.exports) module.exports = api;
+    root.LIDUpload = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    const LIMITS = {
+        PAYLOAD_VERSION: 1,
+        MAX_ITEMS: 200,
+        MAX_SENTENCE: 300,
+        MAX_REASONS: 6,
+        MAX_REASON: 80,
+        MAX_TERM: 40,
+        MAX_EXAMPLE: 200,
+        MAX_VERSION: 16,
+    };
+
+    const STATUSES = ['inconsistent', 'consistent', 'no-description'];
+    const SEVERITIES = ['paint', 'major'];
+    const LABELS = ['correct', 'wrong'];
+
+    /**
+     * Removes anything that could identify a person from free text.
+     * Order matters: e-mail before digit runs, so the local part of an address
+     * is not half-masked first.
+     */
+    function scrub(text) {
+        return String(text || '')
+            // e-mail
+            .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[eposta]')
+            // urls
+            .replace(/\b(?:https?:\/\/|www\.)\S+/gi, '[link]')
+            // Turkish plates: 34 ABC 123 / 06-AB-1234
+            .replace(/\b\d{2}\s*[-\s]?\s*[a-zA-ZçğıöşüÇĞİÖŞÜ]{1,3}\s*[-\s]?\s*\d{2,4}\b/g, '[plaka]')
+            // phone numbers and any long digit run (IMEI, account numbers, ...).
+            // Anchored on a final digit so the separator after the number is
+            // not swallowed, which would glue the mask to the next word.
+            .replace(/(?:\+?\d[\s()\-.]?){6,}\d/g, '[numara]')
+            // leftover 5+ digit runs
+            .replace(/\b\d{5,}\b/g, '[numara]')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    const clip = (text, max) => {
+        const s = scrub(text);
+        return s.length > max ? s.slice(0, max) : s;
+    };
+
+    const oneOf = (value, allowed) => (allowed.includes(value) ? value : null);
+
+    /**
+     * One feedback record, reduced to its linguistic content.
+     * The local store also holds `url` and `title`; neither is read here.
+     */
+    function feedbackItem(entry) {
+        const label = oneOf(entry && entry.label, LABELS);
+        const status = oneOf(entry && entry.status, STATUSES);
+        if (!label || !status) return null;
+
+        return {
+            kind: 'feedback',
+            label,
+            status,
+            severity: oneOf(entry.severity, SEVERITIES),
+            reasons: (Array.isArray(entry.reasons) ? entry.reasons : [])
+                .slice(0, LIMITS.MAX_REASONS)
+                .map((r) => clip(r, LIMITS.MAX_REASON))
+                .filter(Boolean),
+            // The sentence that produced the verdict — the whole point of
+            // collecting anything at all.
+            sentences: (Array.isArray(entry.snippets) ? entry.snippets : [])
+                .slice(0, LIMITS.MAX_REASONS)
+                .map((s) => clip(s, LIMITS.MAX_SENTENCE))
+                .filter(Boolean),
+        };
+    }
+
+    /** One unknown-vocabulary record. */
+    function termItem(term) {
+        const word = clip(term && term.term, LIMITS.MAX_TERM);
+        if (!word || !/[a-zçğıöşü]/i.test(word)) return null;
+
+        return {
+            kind: 'term',
+            term: word,
+            count: Math.min(Number(term.count) || 1, 9999),
+            example: clip(term.example, LIMITS.MAX_EXAMPLE),
+        };
+    }
+
+    /**
+     * Builds the complete request body.
+     * @param {object} input { feedback[], terms[], version, includeTerms }
+     * @returns {{v:number, ext:string, items:object[]}}
+     */
+    function buildPayload({ feedback = [], terms = [], version = '0', includeTerms = true } = {}) {
+        const items = [];
+
+        for (const entry of feedback) {
+            const item = feedbackItem(entry);
+            if (item) items.push(item);
+            if (items.length >= LIMITS.MAX_ITEMS) break;
+        }
+
+        if (includeTerms) {
+            for (const term of terms) {
+                if (items.length >= LIMITS.MAX_ITEMS) break;
+                const item = termItem(term);
+                if (item) items.push(item);
+            }
+        }
+
+        return {
+            v: LIMITS.PAYLOAD_VERSION,
+            ext: clip(version, LIMITS.MAX_VERSION),
+            items,
+        };
+    }
+
+    /**
+     * Last line of defence, used by the tests and by the sender before it
+     * transmits: walks the finished payload looking for anything that smells
+     * identifying. Returns a list of problems; empty means safe to send.
+     */
+    function auditPayload(payload) {
+        const problems = [];
+        const banned = [
+            [/https?:\/\//i, 'url'],
+            [/\bwww\./i, 'url'],
+            [/[\w.+-]+@[\w-]+\.[\w]+/, 'email'],
+            [/\d{5,}/, 'long digit run'],
+            [/sahibinden\.com/i, 'site reference'],
+            [/\/ilan\//i, 'listing path'],
+        ];
+
+        const walk = (value, path) => {
+            if (typeof value === 'string') {
+                for (const [re, name] of banned) {
+                    if (re.test(value)) problems.push(`${path}: ${name}`);
+                }
+            } else if (Array.isArray(value)) {
+                value.forEach((v, i) => walk(v, `${path}[${i}]`));
+            } else if (value && typeof value === 'object') {
+                for (const [k, v] of Object.entries(value)) {
+                    if (k === 'url' || k === 'title') problems.push(`${path}.${k}: forbidden field`);
+                    walk(v, `${path}.${k}`);
+                }
+            }
+        };
+
+        walk(payload, 'payload');
+        return problems;
+    }
+
+    return { LIMITS, scrub, buildPayload, auditPayload };
+});
+
+
 /* ===== src/content-core.js ================================================ */
 
 /* =============================================================================
@@ -762,6 +1237,10 @@
             showProgressBadges = true,
             css = null,
             debug = false,
+            // Supplied by the glue: the extension writes to chrome.storage via
+            // its service worker, the userscript to GM storage. Defaults to a
+            // no-op so the tests can run content-core without any storage.
+            recordFeedback = () => {},
         } = options;
 
         const Detector = globalThis.LIDDetector;
@@ -870,6 +1349,10 @@
         function setBadge(job, variant, label, tooltip = '') {
             if (!FINDING_VARIANTS.includes(variant) && !showProgressBadges) return;
 
+            // A finding replaces any progress badge wholesale, because it is a
+            // different element (a button plus its details panel).
+            job.row.querySelector('.lid-finding')?.remove();
+
             let badge = job.row.querySelector('.lid-badge');
             if (!badge) {
                 badge = document.createElement('span');
@@ -878,6 +1361,176 @@
             badge.className = `lid-badge lid-badge--${variant}`;
             badge.textContent = label;
             badge.title = tooltip;
+        }
+
+        /**
+         * Renders a finding as a collapsed chip that expands on click.
+         *
+         * The reasons used to live in a `title` tooltip, which meant they were
+         * invisible until hovered, could not be read on a touch screen, and
+         * vanished the moment the pointer moved. A chip that stays put and
+         * opens in place is readable, scannable down a column of results, and
+         * lets a buyer compare two listings without chasing tooltips.
+         */
+        /**
+         * "Bu karar doğru / yanlış" buttons.
+         *
+         * A verdict the tool cannot be corrected on is a verdict nobody can
+         * improve. Each click stores one labelled example locally — the raw
+         * material for fixing the vocabulary, and the only way to ever train
+         * something better than hand-written rules.
+         */
+        function buildFeedbackRow(job, result) {
+            const row = document.createElement('div');
+            row.className = 'lid-feedback';
+
+            const label = document.createElement('span');
+            label.textContent = 'Bu karar doğru mu?';
+            row.appendChild(label);
+
+            const done = (verdictText) => {
+                row.textContent = verdictText;
+                row.classList.add('lid-feedback--done');
+            };
+
+            for (const [key, text] of [['correct', '✓ Doğru'], ['wrong', '✗ Yanlış']]) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = `lid-fb lid-fb--${key}`;
+                b.textContent = text;
+                b.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try {
+                        recordFeedback({
+                            label: key,
+                            url: job.key,
+                            title: job.title,
+                            status: result.status,
+                            severity: result.severity || null,
+                            reasons: result.reasons || [],
+                            // The sentences behind the verdict. Kept locally for
+                            // the user's own export, and the only part that is
+                            // ever eligible for upload (see src/upload.js).
+                            snippets: (result.evidence || []).map((e) => e.snippet),
+                            at: new Date().toISOString(),
+                        });
+                        done('Teşekkürler, kaydedildi.');
+                    } catch (err) {
+                        warn('feedback failed:', err && err.message);
+                        done('Kaydedilemedi.');
+                    }
+                });
+                row.appendChild(b);
+            }
+            return row;
+        }
+
+        function renderFinding(job, result, paintOnly) {
+            job.row.querySelector('.lid-badge')?.remove();
+            job.row.querySelector('.lid-finding')?.remove();
+
+            const reasons = (result.reasons && result.reasons.length)
+                ? result.reasons
+                : Detector.evidenceWords(result.evidence);
+
+            const wrap = document.createElement('span');
+            wrap.className = 'lid-finding';
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `lid-badge lid-badge--${paintOnly ? 'paint' : 'danger'}`;
+            btn.setAttribute('aria-expanded', 'false');
+
+            const head = document.createElement('span');
+            head.textContent = `${paintOnly ? LABELS.paint : LABELS.major} · ${reasons[0]}`
+                + (reasons.length > 1 ? ` +${reasons.length - 1}` : '');
+
+            const caret = document.createElement('span');
+            caret.className = 'lid-caret';
+            caret.textContent = '⊕';
+
+            btn.append(head, caret);
+
+            const panel = document.createElement('div');
+            panel.className = 'lid-details';
+            panel.hidden = true;
+
+            const claim = document.createElement('div');
+            claim.className = 'lid-details__claim';
+            claim.textContent = `Başlıkta: ${result.cleanHits.join(', ')}`;
+            panel.appendChild(claim);
+
+            const list = document.createElement('ul');
+            list.className = 'lid-details__list';
+            for (const e of result.evidence) {
+                const li = document.createElement('li');
+                const what = document.createElement('b');
+                what.textContent = e.reason || e.keyword;
+                const quote = document.createElement('span');
+                quote.className = 'lid-details__quote';
+                quote.textContent = e.snippet;
+                li.append(what, quote);
+                list.appendChild(li);
+            }
+            panel.appendChild(list);
+            panel.appendChild(buildFeedbackRow(job, result));
+
+            // The row is a link; without this the click navigates away.
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const open = panel.hidden;
+                panel.hidden = !open;
+                btn.setAttribute('aria-expanded', String(open));
+                caret.textContent = open ? '⊖' : '⊕';
+                // Collapsed it sits inline after the title; open it needs the
+                // full row width, otherwise the panel is pushed to the right
+                // of the title and wraps awkwardly.
+                wrap.classList.toggle('lid-finding--open', open);
+            });
+
+            wrap.append(btn, panel);
+            job.titleLink.insertAdjacentElement('afterend', wrap);
+        }
+
+        /** The "✓ tutarlı" chip: no reasons to list, but still correctable. */
+        function renderConsistent(job, result) {
+            if (!showProgressBadges) return;
+
+            job.row.querySelector('.lid-badge')?.remove();
+            job.row.querySelector('.lid-finding')?.remove();
+
+            const wrap = document.createElement('span');
+            wrap.className = 'lid-finding';
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'lid-badge lid-badge--ok';
+            btn.setAttribute('aria-expanded', 'false');
+            btn.textContent = LABELS.ok + ' ⊕';
+
+            const panel = document.createElement('div');
+            panel.className = 'lid-details lid-details--ok';
+            panel.hidden = true;
+
+            const note = document.createElement('div');
+            note.className = 'lid-details__claim';
+            note.textContent = 'Açıklamada çelişkili ifade bulunamadı.';
+            panel.append(note, buildFeedbackRow(job, result));
+
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const open = panel.hidden;
+                panel.hidden = !open;
+                btn.setAttribute('aria-expanded', String(open));
+                btn.textContent = LABELS.ok + (open ? ' ⊖' : ' ⊕');
+                wrap.classList.toggle('lid-finding--open', open);
+            });
+
+            wrap.append(btn, panel);
+            job.titleLink.insertAdjacentElement('afterend', wrap);
         }
 
         function renderResult(job, result) {
@@ -892,28 +1545,18 @@
                     // never downgrade a warning we cannot re-derive.
                     const paintOnly = result.severity === 'paint';
 
-                    // The words that produced the verdict, shown inline: a buyer
-                    // should know WHY a row is flagged without hovering it.
-                    const words = (result.words && result.words.length
-                        ? result.words
-                        : Detector.evidenceWords(result.evidence)).join(', ');
-
                     job.row.classList.add(paintOnly ? 'lid-paint' : 'lid-inconsistent');
                     applyRowBackground(job.row, ROW_BACKGROUNDS[paintOnly ? 'paint' : 'major']);
                     job.titleLink.classList.add('lid-strike', paintOnly ? 'lid-strike--paint' : 'lid-strike--major');
 
-                    const details = result.evidence.map((e) => `• ${e.keyword}: ${e.snippet}`).join('\n');
-                    setBadge(
-                        job,
-                        paintOnly ? 'paint' : 'danger',
-                        `${paintOnly ? LABELS.paint : LABELS.major} · ${words}`,
-                        `Başlıkta: ${result.cleanHits.join(', ')}\n\n`
-                        + `Açıklamada bulunanlar:\n${details}`
-                    );
+                    renderFinding(job, result, paintOnly);
                     break;
                 }
                 case 'consistent':
-                    setBadge(job, 'ok', LABELS.ok, 'Açıklamada çelişkili ifade bulunamadı.');
+                    // Also expandable, because a MISSED deceitful listing is the
+                    // costlier error and the only way to hear about one is to
+                    // let the user say so here.
+                    renderConsistent(job, result);
                     break;
                 case 'no-description':
                     setBadge(job, 'error', LABELS.noDescription, 'İlan sayfasında açıklama bulunamadı.');
@@ -1022,7 +1665,7 @@
 
 /* ===== src/styles.css ===================================================== */
 
-const LID_INLINE_CSS = "/* =============================================================================\n * styles.css — visual treatment for flagged listings\n * Loaded by the extension via the manifest, and inlined into the userscript\n * by build.ps1. Keep selectors prefixed with `lid-` to avoid colliding with\n * the host site\u0027s own CSS.\n * ========================================================================== */\n\n/* ROW BACKGROUNDS ARE NOT SET HERE.\n *\n * The host page styles its own result rows, and a rule selected by class loses\n * to any id-based rule the site has, even with !important — specificity is\n * compared before !important among important declarations. Rather than fight\n * that with ever-longer selectors, content-core.js writes the row background as\n * an inline `!important` style, which nothing in a stylesheet can outrank.\n *\n * The colours therefore live in ROW_BACKGROUNDS in src/content-core.js.\n * The .lid-inconsistent / .lid-paint classes are still applied, so the rows\n * stay selectable for tests and for anyone restyling them. */\n\n.lid-strike {\n    text-decoration: line-through !important;\n    text-decoration-thickness: 2px !important;\n}\n\n.lid-strike--major { text-decoration-color: #cc0000 !important; }\n.lid-strike--paint { text-decoration-color: #c2410c !important; }\n\n.lid-badge {\n    display: inline-block;\n    margin: 4px 0 0 6px;\n    padding: 2px 8px;\n    border-radius: 4px;\n    font: bold 11px/1.5 Arial, sans-serif;\n    vertical-align: middle;\n    white-space: nowrap;\n    cursor: help;\n}\n\n/* #c2410c keeps white text at ~4.8:1 contrast, which a lighter orange would not. */\n.lid-badge--danger  { background: #d40000; color: #fff; box-shadow: 0 0 0 2px #ffb3b3; font-size: 12px; }\n.lid-badge--paint   { background: #c2410c; color: #fff; box-shadow: 0 0 0 2px #fdba74; font-size: 12px; }\n.lid-badge--pending { background: #eeeeee; color: #666; font-weight: normal; }\n.lid-badge--ok      { background: #e3f6e3; color: #1d7a1d; font-weight: normal; }\n.lid-badge--error   { background: #fff1d6; color: #9a6400; font-weight: normal; }\n\n#lid-panel {\n    position: fixed;\n    right: 12px;\n    bottom: 12px;\n    z-index: 2147483647;\n    background: rgba(30, 30, 30, .92);\n    color: #fff;\n    font: 12px/1.4 Arial, sans-serif;\n    padding: 8px 12px;\n    border-radius: 6px;\n    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);\n    max-width: 280px;\n    pointer-events: none;\n}\n\n#lid-panel b { color: #ff6b6b; }\n";
+const LID_INLINE_CSS = "/* =============================================================================\n * styles.css — visual treatment for flagged listings\n * Loaded by the extension via the manifest, and inlined into the userscript\n * by build.ps1. Keep selectors prefixed with `lid-` to avoid colliding with\n * the host site\u0027s own CSS.\n * ========================================================================== */\n\n/* ROW BACKGROUNDS ARE NOT SET HERE.\n *\n * The host page styles its own result rows, and a rule selected by class loses\n * to any id-based rule the site has, even with !important — specificity is\n * compared before !important among important declarations. Rather than fight\n * that with ever-longer selectors, content-core.js writes the row background as\n * an inline `!important` style, which nothing in a stylesheet can outrank.\n *\n * The colours therefore live in ROW_BACKGROUNDS in src/content-core.js.\n * The .lid-inconsistent / .lid-paint classes are still applied, so the rows\n * stay selectable for tests and for anyone restyling them. */\n\n.lid-strike {\n    text-decoration: line-through !important;\n    text-decoration-thickness: 2px !important;\n}\n\n.lid-strike--major { text-decoration-color: #cc0000 !important; }\n.lid-strike--paint { text-decoration-color: #c2410c !important; }\n\n.lid-badge {\n    display: inline-block;\n    margin: 4px 0 0 6px;\n    padding: 2px 8px;\n    border-radius: 4px;\n    font: bold 11px/1.5 Arial, sans-serif;\n    vertical-align: middle;\n    white-space: nowrap;\n    cursor: help;\n}\n\n/* #c2410c keeps white text at ~4.8:1 contrast, which a lighter orange would not. */\n/* Findings are \u003cbutton\u003es, so reset the UA button styling the host page inherits. */\nbutton.lid-badge {\n    border: 0;\n    font-family: Arial, sans-serif;\n    cursor: pointer;\n    display: inline-flex;\n    align-items: center;\n    gap: 6px;\n    max-width: 340px;\n}\n\n.lid-finding { display: inline-block; vertical-align: middle; }\n.lid-finding--open { display: block; margin-top: 4px; }\n\n.lid-caret {\n    font-size: 13px;\n    line-height: 1;\n    opacity: .85;\n}\n\n/* The expandable reason panel that replaced the old hover tooltip.\n   The [hidden] rule must come with !important: `display: block` below beats the\n   browser\u0027s own `[hidden] { display: none }`, so without it the panel renders\n   open no matter what the hidden property says. */\n.lid-details[hidden] { display: none !important; }\n\n.lid-details {\n    display: block;\n    margin: 6px 0 2px;\n    padding: 8px 10px;\n    max-width: 420px;\n    background: #ffffff;\n    border: 1px solid #d8d8d8;\n    border-left: 3px solid #d40000;\n    border-radius: 5px;\n    font: 12px/1.5 Arial, sans-serif;\n    color: #222;\n    text-decoration: none !important;\n    white-space: normal;\n}\n\n.lid-paint .lid-details { border-left-color: #c2410c; }\n\n.lid-details__claim {\n    color: #666;\n    font-size: 11px;\n    margin-bottom: 5px;\n}\n\n.lid-details__list {\n    margin: 0;\n    padding-left: 16px;\n    list-style: disc;\n}\n\n.lid-details__list li { margin: 0 0 5px; }\n.lid-details__list b { color: #b00000; }\n.lid-paint .lid-details__list b { color: #c2410c; }\n\n.lid-feedback {\n    margin-top: 7px;\n    padding-top: 6px;\n    border-top: 1px solid #ececec;\n    display: flex;\n    align-items: center;\n    gap: 6px;\n    font-size: 11px;\n    color: #666;\n}\n\n.lid-feedback--done { color: #1d7a1d; }\n\n.lid-fb {\n    border: 1px solid #ccc;\n    background: #fafafa;\n    color: #333;\n    border-radius: 4px;\n    padding: 2px 7px;\n    font: 11px/1.4 Arial, sans-serif;\n    cursor: pointer;\n}\n\n.lid-fb--correct:hover { border-color: #1d7a1d; color: #1d7a1d; }\n.lid-fb--wrong:hover   { border-color: #c00; color: #c00; }\n\n.lid-details--ok { border-left-color: #1d7a1d; }\n\n.lid-details__quote {\n    display: block;\n    color: #555;\n    font-size: 11px;\n    font-style: italic;\n}\n\n.lid-badge--danger  { background: #d40000; color: #fff; box-shadow: 0 0 0 2px #ffb3b3; font-size: 12px; }\n.lid-badge--paint   { background: #c2410c; color: #fff; box-shadow: 0 0 0 2px #fdba74; font-size: 12px; }\n.lid-badge--pending { background: #eeeeee; color: #666; font-weight: normal; }\n.lid-badge--ok      { background: #e3f6e3; color: #1d7a1d; font-weight: normal; }\n.lid-badge--error   { background: #fff1d6; color: #9a6400; font-weight: normal; }\n\n#lid-panel {\n    position: fixed;\n    right: 12px;\n    bottom: 12px;\n    z-index: 2147483647;\n    background: rgba(30, 30, 30, .92);\n    color: #fff;\n    font: 12px/1.4 Arial, sans-serif;\n    padding: 8px 12px;\n    border-radius: 6px;\n    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);\n    max-width: 280px;\n    pointer-events: none;\n}\n\n#lid-panel b { color: #ff6b6b; }\n";
 
 
 /* ===== src/userscript-glue.js ============================================= */
@@ -1103,6 +1746,70 @@ const LID_INLINE_CSS = "/* =====================================================
     };
 
     /* -------------------------------------------------------------------------
+     * Corpus — labelled feedback and unknown vocabulary from ordinary browsing.
+     * Stays on this machine; exported only when the user asks.
+     * ---------------------------------------------------------------------- */
+    const Corpus = {
+        FEEDBACK_KEY: 'lid_feedback_v1',
+        TERMS_KEY: 'lid_terms_v1',
+        MAX_FEEDBACK: 1000,
+        MAX_TERMS: 3000,
+
+        _read(key, fallback) {
+            try {
+                const raw = typeof GM_getValue === 'function' ? GM_getValue(key, null) : null;
+                return raw ? JSON.parse(raw) : fallback;
+            } catch { return fallback; }
+        },
+        _write(key, value) {
+            try {
+                if (typeof GM_setValue === 'function') GM_setValue(key, JSON.stringify(value));
+            } catch (e) { console.warn('[LID] corpus save failed:', e); }
+        },
+
+        addFeedback(entry) {
+            const list = this._read(this.FEEDBACK_KEY, []).filter((e) => e.url !== entry.url);
+            list.push(entry);
+            this._write(this.FEEDBACK_KEY, list.slice(-this.MAX_FEEDBACK));
+        },
+
+        addTerms(terms) {
+            if (!terms || !terms.length) return;
+            const map = this._read(this.TERMS_KEY, {});
+            for (const t of terms) {
+                if (map[t.term]) map[t.term].count += t.count;
+                else map[t.term] = { count: t.count, example: t.example };
+            }
+            this._write(this.TERMS_KEY, Object.fromEntries(
+                Object.entries(map).sort((a, b) => b[1].count - a[1].count).slice(0, this.MAX_TERMS)
+            ));
+        },
+
+        export() {
+            return {
+                exportedAt: new Date().toISOString(),
+                feedback: this._read(this.FEEDBACK_KEY, []),
+                unknownTerms: Object.entries(this._read(this.TERMS_KEY, {}))
+                    .map(([term, v]) => ({ term, count: v.count, example: v.example }))
+                    .sort((a, b) => b.count - a.count),
+            };
+        },
+    };
+
+    // Tampermonkey menu entry, so the userscript has the same export the
+    // extension popup offers.
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('Geri bildirimleri dışa aktar (JSON)', () => {
+            const blob = new Blob([JSON.stringify(Corpus.export(), null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `lid-corpus-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        });
+    }
+
+    /* -------------------------------------------------------------------------
      * HTTP
      * ---------------------------------------------------------------------- */
     function httpGet(url) {
@@ -1150,6 +1857,9 @@ const LID_INLINE_CSS = "/* =====================================================
         const description = LIDSiteAdapters.extractDescription(doc, adapter);
         const result = LIDDetector.analyze(job.title, description);
 
+        // Free evidence: this text was fetched anyway. No extra request.
+        if (description) Corpus.addTerms(LIDDetector.harvestTerms(description));
+
         Cache.set(job.key, result);
         return result;
     }
@@ -1166,6 +1876,7 @@ const LID_INLINE_CSS = "/* =====================================================
         css: typeof LID_INLINE_CSS === 'string' ? LID_INLINE_CSS : '',
         showProgressBadges: SETTINGS.SHOW_PROGRESS_BADGES,
         debug: SETTINGS.DEBUG,
+        recordFeedback: (entry) => Corpus.addFeedback(entry),
         requestAnalysis(job) {
             const cached = Cache.get(job.key);
             if (cached) return Promise.resolve(cached);

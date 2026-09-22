@@ -77,6 +77,7 @@
   </tbody>
 </table>
 
+<script src="../src/lexicon.js"></script>
 <script src="../src/detector.js"></script>
 <script src="../src/site-adapters.js"></script>
 <script src="../src/queue.js"></script>
@@ -152,6 +153,29 @@ function check() {
     const text = row.querySelector('.lid-badge')?.textContent || '';
     if (!text.includes(label) || !text.includes(word)) {
       failures.push({ row, expect: `badge reading "${label} · …${word}…"`, actual: `"${text}"` });
+    }
+
+    // The reasons must be reachable by CLICK, not only by hovering a tooltip.
+    const btn = row.querySelector('button.lid-badge');
+    const panel = row.querySelector('.lid-details');
+    if (!btn || !panel) {
+      failures.push({ row, expect: 'an expandable finding chip', actual: 'plain badge' });
+      continue;
+    }
+    // Assert what the user SEES, not just the hidden property. A stylesheet
+    // rule can override [hidden] and leave every panel permanently open while
+    // the property still reads true.
+    const visible = () => getComputedStyle(panel).display !== 'none';
+
+    if (visible()) {
+      failures.push({ row, expect: 'panel collapsed initially', actual: 'rendered open' });
+    }
+    btn.click();
+    const openedOk = visible() && panel.innerText.includes(word)
+      && btn.getAttribute('aria-expanded') === 'true';
+    btn.click();
+    if (!openedOk || visible()) {
+      failures.push({ row, expect: 'click expands then collapses (by computed display)', actual: 'toggle broken' });
     }
   }
 

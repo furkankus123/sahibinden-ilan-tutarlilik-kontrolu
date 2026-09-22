@@ -37,6 +37,100 @@
 }
 
 /* #c2410c keeps white text at ~4.8:1 contrast, which a lighter orange would not. */
+/* Findings are <button>s, so reset the UA button styling the host page inherits. */
+button.lid-badge {
+    border: 0;
+    font-family: Arial, sans-serif;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 340px;
+}
+
+.lid-finding { display: inline-block; vertical-align: middle; }
+.lid-finding--open { display: block; margin-top: 4px; }
+
+.lid-caret {
+    font-size: 13px;
+    line-height: 1;
+    opacity: .85;
+}
+
+/* The expandable reason panel that replaced the old hover tooltip.
+   The [hidden] rule must come with !important: `display: block` below beats the
+   browser's own `[hidden] { display: none }`, so without it the panel renders
+   open no matter what the hidden property says. */
+.lid-details[hidden] { display: none !important; }
+
+.lid-details {
+    display: block;
+    margin: 6px 0 2px;
+    padding: 8px 10px;
+    max-width: 420px;
+    background: #ffffff;
+    border: 1px solid #d8d8d8;
+    border-left: 3px solid #d40000;
+    border-radius: 5px;
+    font: 12px/1.5 Arial, sans-serif;
+    color: #222;
+    text-decoration: none !important;
+    white-space: normal;
+}
+
+.lid-paint .lid-details { border-left-color: #c2410c; }
+
+.lid-details__claim {
+    color: #666;
+    font-size: 11px;
+    margin-bottom: 5px;
+}
+
+.lid-details__list {
+    margin: 0;
+    padding-left: 16px;
+    list-style: disc;
+}
+
+.lid-details__list li { margin: 0 0 5px; }
+.lid-details__list b { color: #b00000; }
+.lid-paint .lid-details__list b { color: #c2410c; }
+
+.lid-feedback {
+    margin-top: 7px;
+    padding-top: 6px;
+    border-top: 1px solid #ececec;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #666;
+}
+
+.lid-feedback--done { color: #1d7a1d; }
+
+.lid-fb {
+    border: 1px solid #ccc;
+    background: #fafafa;
+    color: #333;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font: 11px/1.4 Arial, sans-serif;
+    cursor: pointer;
+}
+
+.lid-fb--correct:hover { border-color: #1d7a1d; color: #1d7a1d; }
+.lid-fb--wrong:hover   { border-color: #c00; color: #c00; }
+
+.lid-details--ok { border-left-color: #1d7a1d; }
+
+.lid-details__quote {
+    display: block;
+    color: #555;
+    font-size: 11px;
+    font-style: italic;
+}
+
 .lid-badge--danger  { background: #d40000; color: #fff; box-shadow: 0 0 0 2px #ffb3b3; font-size: 12px; }
 .lid-badge--paint   { background: #c2410c; color: #fff; box-shadow: 0 0 0 2px #fdba74; font-size: 12px; }
 .lid-badge--pending { background: #eeeeee; color: #666; font-weight: normal; }

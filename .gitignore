@@ -15,6 +15,12 @@ $RECYCLE.BIN/
 scratch/
 tmp/
 
+# --- Sunucu ---
+# Ortak veri toplayan Cloudflare Worker'ı depoya koymuyoruz. Sır içermez
+# (token'lar Cloudflare'de şifreli durur) ama uç noktaları ve kota sınırlarını
+# herkese göstermenin de bir faydası yok.
+server/
+
 # NOTE: dist/ is deliberately NOT ignored.
 # The built userscript is committed so people can install it straight from a
 # GitHub raw link, and so Greasy Fork can sync from the repository.

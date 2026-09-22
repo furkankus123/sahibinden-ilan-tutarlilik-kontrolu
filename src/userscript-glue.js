@@ -74,6 +74,70 @@
     };
 
     /* -------------------------------------------------------------------------
+     * Corpus — labelled feedback and unknown vocabulary from ordinary browsing.
+     * Stays on this machine; exported only when the user asks.
+     * ---------------------------------------------------------------------- */
+    const Corpus = {
+        FEEDBACK_KEY: 'lid_feedback_v1',
+        TERMS_KEY: 'lid_terms_v1',
+        MAX_FEEDBACK: 1000,
+        MAX_TERMS: 3000,
+
+        _read(key, fallback) {
+            try {
+                const raw = typeof GM_getValue === 'function' ? GM_getValue(key, null) : null;
+                return raw ? JSON.parse(raw) : fallback;
+            } catch { return fallback; }
+        },
+        _write(key, value) {
+            try {
+                if (typeof GM_setValue === 'function') GM_setValue(key, JSON.stringify(value));
+            } catch (e) { console.warn('[LID] corpus save failed:', e); }
+        },
+
+        addFeedback(entry) {
+            const list = this._read(this.FEEDBACK_KEY, []).filter((e) => e.url !== entry.url);
+            list.push(entry);
+            this._write(this.FEEDBACK_KEY, list.slice(-this.MAX_FEEDBACK));
+        },
+
+        addTerms(terms) {
+            if (!terms || !terms.length) return;
+            const map = this._read(this.TERMS_KEY, {});
+            for (const t of terms) {
+                if (map[t.term]) map[t.term].count += t.count;
+                else map[t.term] = { count: t.count, example: t.example };
+            }
+            this._write(this.TERMS_KEY, Object.fromEntries(
+                Object.entries(map).sort((a, b) => b[1].count - a[1].count).slice(0, this.MAX_TERMS)
+            ));
+        },
+
+        export() {
+            return {
+                exportedAt: new Date().toISOString(),
+                feedback: this._read(this.FEEDBACK_KEY, []),
+                unknownTerms: Object.entries(this._read(this.TERMS_KEY, {}))
+                    .map(([term, v]) => ({ term, count: v.count, example: v.example }))
+                    .sort((a, b) => b.count - a.count),
+            };
+        },
+    };
+
+    // Tampermonkey menu entry, so the userscript has the same export the
+    // extension popup offers.
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('Geri bildirimleri dışa aktar (JSON)', () => {
+            const blob = new Blob([JSON.stringify(Corpus.export(), null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `lid-corpus-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        });
+    }
+
+    /* -------------------------------------------------------------------------
      * HTTP
      * ---------------------------------------------------------------------- */
     function httpGet(url) {
@@ -121,6 +185,9 @@
         const description = LIDSiteAdapters.extractDescription(doc, adapter);
         const result = LIDDetector.analyze(job.title, description);
 
+        // Free evidence: this text was fetched anyway. No extra request.
+        if (description) Corpus.addTerms(LIDDetector.harvestTerms(description));
+
         Cache.set(job.key, result);
         return result;
     }
@@ -137,6 +204,7 @@
         css: typeof LID_INLINE_CSS === 'string' ? LID_INLINE_CSS : '',
         showProgressBadges: SETTINGS.SHOW_PROGRESS_BADGES,
         debug: SETTINGS.DEBUG,
+        recordFeedback: (entry) => Corpus.addFeedback(entry),
         requestAnalysis(job) {
             const cached = Cache.get(job.key);
             if (cached) return Promise.resolve(cached);

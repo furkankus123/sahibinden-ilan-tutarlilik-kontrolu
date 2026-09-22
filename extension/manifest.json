@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sahibinden Tutarsızlık Dedektörü",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Başlığında hatasız/boyasız yazan ama açıklamasında boya, değişen parça veya hasar kaydı geçen ilanları işaretler.",
 
   "minimum_chrome_version": "102",
@@ -31,6 +31,11 @@
     "https://sahibinden.com/*"
   ],
 
+  "//optional": "Granted only if the user turns on anonymous sharing. A default install asks for nothing beyond sahibinden.com.",
+  "optional_host_permissions": [
+    "https://*.workers.dev/*"
+  ],
+
   "background": {
     "service_worker": "src/background.js"
   },
@@ -42,6 +47,7 @@
         "https://sahibinden.com/*"
       ],
       "js": [
+        "src/lexicon.js",
         "src/detector.js",
         "src/site-adapters.js",
         "src/content-core.js",

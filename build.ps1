@@ -14,9 +14,11 @@ $root = $PSScriptRoot
 
 # Files shared by BOTH builds, concatenated in dependency order.
 $sharedModules = @(
+    'lexicon.js',
     'detector.js',
     'site-adapters.js',
     'queue.js',
+    'upload.js',
     'content-core.js'
 )
 

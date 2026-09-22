@@ -47,6 +47,18 @@
   button:hover { border-color:var(--accent); color:var(--accent); }
   button:disabled { opacity:.55; cursor:default; border-color:var(--line); color:var(--muted); }
 
+  .section { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+  .section__title { font-size:11px; color:var(--muted); text-transform:uppercase;
+                    letter-spacing:.05em; margin-bottom:2px; }
+  .section .stats { margin-top:8px; }
+  .section button + button { margin-top:6px; }
+  button.subtle { background:transparent; color:var(--muted); font-size:11.5px; }
+  .fine { margin:6px 0 8px; font-size:10.5px; line-height:1.45; color:var(--muted); }
+  .fine b { color:var(--fg); }
+  #previewBox { margin:8px 0 0; padding:8px; max-height:160px; overflow:auto;
+                background:var(--field); border-radius:6px; font:10px/1.45 ui-monospace,Consolas,monospace;
+                white-space:pre-wrap; word-break:break-word; }
+
   footer { margin-top:11px; padding-top:9px; border-top:1px solid var(--line);
            color:var(--muted); font-size:10.5px; line-height:1.4; }
 </style>
@@ -74,6 +86,32 @@
 </div>
 
 <button id="clear">Önbelleği temizle</button>
+
+<div class="section">
+  <div class="section__title">Öğrenme verisi</div>
+  <div class="stats">
+    <div class="stat"><b id="fb">–</b><small>geri bildirim</small></div>
+    <div class="stat"><b id="wrong">–</b><small>yanlış karar</small></div>
+    <div class="stat"><b id="terms">–</b><small>yeni kelime</small></div>
+  </div>
+  <button id="export">JSON olarak dışa aktar</button>
+  <button id="clearCorpus" class="subtle">Öğrenme verisini sil</button>
+</div>
+
+<div class="section">
+  <div class="row" style="border:0;padding-bottom:4px">
+    <label for="share">Anonim katkı
+      <small>Kapalı. Açarsanız yalnızca cümle ve kararınız gönderilir.</small>
+    </label>
+    <span class="sw"><input type="checkbox" id="share"><span></span></span>
+  </div>
+  <p class="fine">
+    İlan adresi, başlık ve kimlik bilgisi <b>gönderilmez</b>. Telefon, plaka ve
+    e-posta metinden temizlenir. Gönderilecek veriyi önce kendiniz görebilirsiniz.
+  </p>
+  <button id="preview" class="subtle">Ne gönderileceğini göster</button>
+  <pre id="previewBox" hidden></pre>
+</div>
 
 <footer>
   İlan başlığında "hatasız / boyasız" yazıp açıklamasında boya, değişen veya
