@@ -177,8 +177,9 @@
      *   2 — adds severity, words[], evidence[].severity
      *   3 — adds bare "boya" keyword + NEUTRAL_BEFORE/AFTER rules
      *   4 — adds evidence[].reason and reasons[] from slot extraction
+     *   5 — snippets keep the seller's own spelling and quote a whole sentence
      */
-    const RESULT_SCHEMA = 4;
+    const RESULT_SCHEMA = 5;
 
     const KEYWORDS = {
         // Title claims that the car is clean.
@@ -273,6 +274,10 @@
         QUANTIFIER_WINDOW: 25,
         // Max leftover letters allowed in a "connector only" gap (see below).
         MAX_CONNECTOR_REMNANT: 4,
+        // Longest quoted sentence shown in the expanded reason panel. Long
+        // enough to read a full disclosure, short enough not to paste the
+        // whole advert into a results row.
+        SNIPPET_MAX: 240,
     };
 
     /* -------------------------------------------------------------------------
@@ -298,6 +303,44 @@
             .replace(/[ \t\r\f\v ]+/g, ' ')
             .replace(/\n\s*/g, '\n')
             .trim();
+    }
+
+    /** Whitespace tidied, but case and Turkish letters untouched. */
+    function collapseWhitespace(text) {
+        return String(text || '')
+            .replace(/[ \t\r\f\v ]+/g, ' ')
+            .replace(/\n\s*/g, '\n')
+            .trim();
+    }
+
+    /**
+     * Case-folds and strips Turkish diacritics WITHOUT changing the length,
+     * one UTF-16 unit in, one out.
+     *
+     * That guarantee is the whole point: it lets an index found in the folded
+     * text address the exact same character in the original. Without it we can
+     * only ever show the folded text back to the user, which is how snippets
+     * ended up reading "parca ince cizik boyasi vardir" instead of
+     * "parça ince çizik boyası vardır".
+     */
+    function toMatchable(display) {
+        let out = '';
+        for (let i = 0; i < display.length; i++) {
+            const ch = display[i];
+            const lower = ch.toLocaleLowerCase('tr-TR');
+            const folded = FOLD_MAP[lower] !== undefined ? FOLD_MAP[lower] : lower;
+            out += folded.length === 1 ? folded : ch;
+        }
+        return out;
+    }
+
+    /**
+     * The two aligned views of a description: what we search, and what we show.
+     * `match[i]` and `display[i]` are always the same character position.
+     */
+    function prepareText(raw) {
+        const display = collapseWhitespace(raw);
+        return { display, match: toMatchable(display) };
     }
 
     const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -550,19 +593,68 @@
      * @param {string} rawText raw description text
      * @returns {Array<{keyword: string, severity: string, reason: string, snippet: string}>}
      */
+    /**
+     * Trims a sentence down to `max` characters while keeping the matched
+     * phrase inside it, and never cuts through the middle of a word.
+     */
+    function clipAround(text, from, to, max) {
+        if (text.length <= max) return { text, cutStart: false, cutEnd: false };
+
+        const slack = max - (to - from);
+        let start = Math.max(0, from - Math.floor(slack * 0.4));
+        let end = Math.min(text.length, start + max);
+        start = Math.max(0, Math.min(start, end - max));
+
+        // Snap outwards to whitespace so no word is sliced in half.
+        if (start > 0) {
+            const space = text.indexOf(' ', start);
+            if (space !== -1 && space < from) start = space + 1;
+        }
+        if (end < text.length) {
+            const space = text.lastIndexOf(' ', end);
+            if (space !== -1 && space > to) end = space;
+        }
+
+        return {
+            text: text.slice(start, end).trim(),
+            cutStart: start > 0,
+            cutEnd: end < text.length,
+        };
+    }
+
+    /**
+     * The sentence a finding came from, in the seller's own spelling.
+     * A whole sentence reads far better than a fixed character window, which
+     * used to start and end mid-word ("…tur.sadece 1 parca ince cizik boyasi").
+     */
+    function buildSnippet(display, match, m) {
+        const [s, e] = sentenceBounds(match, m.start);
+
+        // Replacing newlines is 1:1, so offsets survive it; trimming is not,
+        // so the leading whitespace is measured and subtracted explicitly.
+        const raw = display.slice(s, e).replace(/\n/g, ' ');
+        const lead = raw.length - raw.replace(/^\s+/, '').length;
+        const sentence = raw.trim();
+        if (!sentence) return display.slice(m.start, m.end);
+
+        const from = Math.max(0, m.start - s - lead);
+        const to = Math.min(sentence.length, m.end - s - lead);
+
+        const clipped = clipAround(sentence, from, to, TUNING.SNIPPET_MAX);
+        return (clipped.cutStart ? '…' : '') + clipped.text + (clipped.cutEnd ? '…' : '');
+    }
+
     function findDamageEvidence(rawText) {
-        const text = normalize(rawText);
-        const matches = resolveNegation(text, collectMatches(text));
+        const { display, match } = prepareText(rawText);
+        const matches = resolveNegation(match, collectMatches(match));
 
         return matches
             .filter((m) => !m.negated)
             .map((m) => ({
                 keyword: m.keyword,
                 severity: m.severity,
-                reason: buildReason(text, m),
-                snippet: '…' + text
-                    .slice(Math.max(0, m.start - 30), Math.min(text.length, m.end + 40))
-                    .replace(/\n/g, ' ') + '…',
+                reason: buildReason(match, m),
+                snippet: buildSnippet(display, match, m),
             }));
     }
 
@@ -1665,7 +1757,7 @@
 
 /* ===== src/styles.css ===================================================== */
 
-const LID_INLINE_CSS = "/* =============================================================================\n * styles.css — visual treatment for flagged listings\n * Loaded by the extension via the manifest, and inlined into the userscript\n * by build.ps1. Keep selectors prefixed with `lid-` to avoid colliding with\n * the host site\u0027s own CSS.\n * ========================================================================== */\n\n/* ROW BACKGROUNDS ARE NOT SET HERE.\n *\n * The host page styles its own result rows, and a rule selected by class loses\n * to any id-based rule the site has, even with !important — specificity is\n * compared before !important among important declarations. Rather than fight\n * that with ever-longer selectors, content-core.js writes the row background as\n * an inline `!important` style, which nothing in a stylesheet can outrank.\n *\n * The colours therefore live in ROW_BACKGROUNDS in src/content-core.js.\n * The .lid-inconsistent / .lid-paint classes are still applied, so the rows\n * stay selectable for tests and for anyone restyling them. */\n\n.lid-strike {\n    text-decoration: line-through !important;\n    text-decoration-thickness: 2px !important;\n}\n\n.lid-strike--major { text-decoration-color: #cc0000 !important; }\n.lid-strike--paint { text-decoration-color: #c2410c !important; }\n\n.lid-badge {\n    display: inline-block;\n    margin: 4px 0 0 6px;\n    padding: 2px 8px;\n    border-radius: 4px;\n    font: bold 11px/1.5 Arial, sans-serif;\n    vertical-align: middle;\n    white-space: nowrap;\n    cursor: help;\n}\n\n/* #c2410c keeps white text at ~4.8:1 contrast, which a lighter orange would not. */\n/* Findings are \u003cbutton\u003es, so reset the UA button styling the host page inherits. */\nbutton.lid-badge {\n    border: 0;\n    font-family: Arial, sans-serif;\n    cursor: pointer;\n    display: inline-flex;\n    align-items: center;\n    gap: 6px;\n    max-width: 340px;\n}\n\n.lid-finding { display: inline-block; vertical-align: middle; }\n.lid-finding--open { display: block; margin-top: 4px; }\n\n.lid-caret {\n    font-size: 13px;\n    line-height: 1;\n    opacity: .85;\n}\n\n/* The expandable reason panel that replaced the old hover tooltip.\n   The [hidden] rule must come with !important: `display: block` below beats the\n   browser\u0027s own `[hidden] { display: none }`, so without it the panel renders\n   open no matter what the hidden property says. */\n.lid-details[hidden] { display: none !important; }\n\n.lid-details {\n    display: block;\n    margin: 6px 0 2px;\n    padding: 8px 10px;\n    max-width: 420px;\n    background: #ffffff;\n    border: 1px solid #d8d8d8;\n    border-left: 3px solid #d40000;\n    border-radius: 5px;\n    font: 12px/1.5 Arial, sans-serif;\n    color: #222;\n    text-decoration: none !important;\n    white-space: normal;\n}\n\n.lid-paint .lid-details { border-left-color: #c2410c; }\n\n.lid-details__claim {\n    color: #666;\n    font-size: 11px;\n    margin-bottom: 5px;\n}\n\n.lid-details__list {\n    margin: 0;\n    padding-left: 16px;\n    list-style: disc;\n}\n\n.lid-details__list li { margin: 0 0 5px; }\n.lid-details__list b { color: #b00000; }\n.lid-paint .lid-details__list b { color: #c2410c; }\n\n.lid-feedback {\n    margin-top: 7px;\n    padding-top: 6px;\n    border-top: 1px solid #ececec;\n    display: flex;\n    align-items: center;\n    gap: 6px;\n    font-size: 11px;\n    color: #666;\n}\n\n.lid-feedback--done { color: #1d7a1d; }\n\n.lid-fb {\n    border: 1px solid #ccc;\n    background: #fafafa;\n    color: #333;\n    border-radius: 4px;\n    padding: 2px 7px;\n    font: 11px/1.4 Arial, sans-serif;\n    cursor: pointer;\n}\n\n.lid-fb--correct:hover { border-color: #1d7a1d; color: #1d7a1d; }\n.lid-fb--wrong:hover   { border-color: #c00; color: #c00; }\n\n.lid-details--ok { border-left-color: #1d7a1d; }\n\n.lid-details__quote {\n    display: block;\n    color: #555;\n    font-size: 11px;\n    font-style: italic;\n}\n\n.lid-badge--danger  { background: #d40000; color: #fff; box-shadow: 0 0 0 2px #ffb3b3; font-size: 12px; }\n.lid-badge--paint   { background: #c2410c; color: #fff; box-shadow: 0 0 0 2px #fdba74; font-size: 12px; }\n.lid-badge--pending { background: #eeeeee; color: #666; font-weight: normal; }\n.lid-badge--ok      { background: #e3f6e3; color: #1d7a1d; font-weight: normal; }\n.lid-badge--error   { background: #fff1d6; color: #9a6400; font-weight: normal; }\n\n#lid-panel {\n    position: fixed;\n    right: 12px;\n    bottom: 12px;\n    z-index: 2147483647;\n    background: rgba(30, 30, 30, .92);\n    color: #fff;\n    font: 12px/1.4 Arial, sans-serif;\n    padding: 8px 12px;\n    border-radius: 6px;\n    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);\n    max-width: 280px;\n    pointer-events: none;\n}\n\n#lid-panel b { color: #ff6b6b; }\n";
+const LID_INLINE_CSS = "/* =============================================================================\n * styles.css — visual treatment for flagged listings\n * Loaded by the extension via the manifest, and inlined into the userscript\n * by build.ps1. Keep selectors prefixed with `lid-` to avoid colliding with\n * the host site\u0027s own CSS.\n * ========================================================================== */\n\n/* ROW BACKGROUNDS ARE NOT SET HERE.\n *\n * The host page styles its own result rows, and a rule selected by class loses\n * to any id-based rule the site has, even with !important — specificity is\n * compared before !important among important declarations. Rather than fight\n * that with ever-longer selectors, content-core.js writes the row background as\n * an inline `!important` style, which nothing in a stylesheet can outrank.\n *\n * The colours therefore live in ROW_BACKGROUNDS in src/content-core.js.\n * The .lid-inconsistent / .lid-paint classes are still applied, so the rows\n * stay selectable for tests and for anyone restyling them. */\n\n.lid-strike {\n    text-decoration: line-through !important;\n    text-decoration-thickness: 2px !important;\n}\n\n.lid-strike--major { text-decoration-color: #cc0000 !important; }\n.lid-strike--paint { text-decoration-color: #c2410c !important; }\n\n.lid-badge {\n    display: inline-block;\n    margin: 4px 0 0 6px;\n    padding: 2px 8px;\n    border-radius: 4px;\n    font: bold 11px/1.5 Arial, sans-serif;\n    vertical-align: middle;\n    white-space: nowrap;\n    cursor: help;\n}\n\n/* #c2410c keeps white text at ~4.8:1 contrast, which a lighter orange would not. */\n/* Findings are \u003cbutton\u003es, so reset the UA button styling the host page inherits. */\nbutton.lid-badge {\n    border: 0;\n    font-family: Arial, sans-serif;\n    cursor: pointer;\n    display: inline-flex;\n    align-items: center;\n    gap: 6px;\n    max-width: 340px;\n}\n\n.lid-finding { display: inline-block; vertical-align: middle; }\n.lid-finding--open { display: block; margin-top: 4px; }\n\n.lid-caret {\n    font-size: 13px;\n    line-height: 1;\n    opacity: .85;\n}\n\n/* The expandable reason panel that replaced the old hover tooltip.\n   The [hidden] rule must come with !important: `display: block` below beats the\n   browser\u0027s own `[hidden] { display: none }`, so without it the panel renders\n   open no matter what the hidden property says. */\n.lid-details[hidden] { display: none !important; }\n\n.lid-details {\n    display: block;\n    margin: 6px 0 2px;\n    padding: 10px 12px;\n    /* Wide enough for a full Turkish sentence without constant wrapping. */\n    max-width: 560px;\n    /* Very long descriptions should scroll inside the card rather than push\n       the rest of the results page down. Nothing is hidden — it scrolls. */\n    max-height: 340px;\n    overflow-y: auto;\n    background: #ffffff;\n    border: 1px solid #d8d8d8;\n    border-left: 3px solid #d40000;\n    border-radius: 5px;\n    font: 12.5px/1.6 Arial, sans-serif;\n    color: #222;\n    text-align: left;\n    text-decoration: none !important;\n    white-space: normal;\n    word-break: normal;\n    overflow-wrap: anywhere;\n}\n\n.lid-paint .lid-details { border-left-color: #c2410c; }\n\n.lid-details__claim {\n    color: #666;\n    font-size: 11px;\n    margin-bottom: 5px;\n}\n\n.lid-details__list {\n    margin: 0;\n    padding-left: 18px;\n    list-style: disc;\n}\n\n.lid-details__list li { margin: 0 0 9px; }\n.lid-details__list li:last-child { margin-bottom: 0; }\n.lid-details__list b { color: #b00000; }\n.lid-paint .lid-details__list b { color: #c2410c; }\n\n.lid-feedback {\n    margin-top: 7px;\n    padding-top: 6px;\n    border-top: 1px solid #ececec;\n    display: flex;\n    align-items: center;\n    gap: 6px;\n    font-size: 11px;\n    color: #666;\n}\n\n.lid-feedback--done { color: #1d7a1d; }\n\n.lid-fb {\n    border: 1px solid #ccc;\n    background: #fafafa;\n    color: #333;\n    border-radius: 4px;\n    padding: 2px 7px;\n    font: 11px/1.4 Arial, sans-serif;\n    cursor: pointer;\n}\n\n.lid-fb--correct:hover { border-color: #1d7a1d; color: #1d7a1d; }\n.lid-fb--wrong:hover   { border-color: #c00; color: #c00; }\n\n.lid-details--ok { border-left-color: #1d7a1d; }\n\n/* The seller\u0027s own sentence. Not italic: italics make Turkish diacritics\n   (ı/İ, ş, ğ) noticeably harder to read at small sizes, and this line is the\n   evidence the user is here to check. */\n.lid-details__quote {\n    display: block;\n    margin-top: 3px;\n    padding: 5px 8px;\n    background: #f6f6f6;\n    border-left: 2px solid #ddd;\n    border-radius: 3px;\n    color: #333;\n    font-size: 12px;\n    line-height: 1.55;\n}\n\n.lid-badge--danger  { background: #d40000; color: #fff; box-shadow: 0 0 0 2px #ffb3b3; font-size: 12px; }\n.lid-badge--paint   { background: #c2410c; color: #fff; box-shadow: 0 0 0 2px #fdba74; font-size: 12px; }\n.lid-badge--pending { background: #eeeeee; color: #666; font-weight: normal; }\n.lid-badge--ok      { background: #e3f6e3; color: #1d7a1d; font-weight: normal; }\n.lid-badge--error   { background: #fff1d6; color: #9a6400; font-weight: normal; }\n\n#lid-panel {\n    position: fixed;\n    right: 12px;\n    bottom: 12px;\n    z-index: 2147483647;\n    background: rgba(30, 30, 30, .92);\n    color: #fff;\n    font: 12px/1.4 Arial, sans-serif;\n    padding: 8px 12px;\n    border-radius: 6px;\n    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);\n    max-width: 280px;\n    pointer-events: none;\n}\n\n#lid-panel b { color: #ff6b6b; }\n";
 
 
 /* ===== src/userscript-glue.js ============================================= */

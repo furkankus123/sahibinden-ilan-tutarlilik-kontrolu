@@ -66,16 +66,24 @@ button.lid-badge {
 .lid-details {
     display: block;
     margin: 6px 0 2px;
-    padding: 8px 10px;
-    max-width: 420px;
+    padding: 10px 12px;
+    /* Wide enough for a full Turkish sentence without constant wrapping. */
+    max-width: 560px;
+    /* Very long descriptions should scroll inside the card rather than push
+       the rest of the results page down. Nothing is hidden — it scrolls. */
+    max-height: 340px;
+    overflow-y: auto;
     background: #ffffff;
     border: 1px solid #d8d8d8;
     border-left: 3px solid #d40000;
     border-radius: 5px;
-    font: 12px/1.5 Arial, sans-serif;
+    font: 12.5px/1.6 Arial, sans-serif;
     color: #222;
+    text-align: left;
     text-decoration: none !important;
     white-space: normal;
+    word-break: normal;
+    overflow-wrap: anywhere;
 }
 
 .lid-paint .lid-details { border-left-color: #c2410c; }
@@ -88,11 +96,12 @@ button.lid-badge {
 
 .lid-details__list {
     margin: 0;
-    padding-left: 16px;
+    padding-left: 18px;
     list-style: disc;
 }
 
-.lid-details__list li { margin: 0 0 5px; }
+.lid-details__list li { margin: 0 0 9px; }
+.lid-details__list li:last-child { margin-bottom: 0; }
 .lid-details__list b { color: #b00000; }
 .lid-paint .lid-details__list b { color: #c2410c; }
 
@@ -124,11 +133,19 @@ button.lid-badge {
 
 .lid-details--ok { border-left-color: #1d7a1d; }
 
+/* The seller's own sentence. Not italic: italics make Turkish diacritics
+   (ı/İ, ş, ğ) noticeably harder to read at small sizes, and this line is the
+   evidence the user is here to check. */
 .lid-details__quote {
     display: block;
-    color: #555;
-    font-size: 11px;
-    font-style: italic;
+    margin-top: 3px;
+    padding: 5px 8px;
+    background: #f6f6f6;
+    border-left: 2px solid #ddd;
+    border-radius: 3px;
+    color: #333;
+    font-size: 12px;
+    line-height: 1.55;
 }
 
 .lid-badge--danger  { background: #d40000; color: #fff; box-shadow: 0 0 0 2px #ffb3b3; font-size: 12px; }

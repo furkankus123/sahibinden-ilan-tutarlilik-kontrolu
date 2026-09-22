@@ -334,6 +334,38 @@ report(
   'each evidence item carries its own reason'
 );
 
+/* --- the quoted sentence shown in the expanded panel -------------------- */
+
+// A realistic advert: mixed case, Turkish letters, several sentences.
+const ADVERT = `2018 model aracımız ilk sahibinden, bakımları yetkili serviste yapılmıştır.
+Kaporta tur. Sadece 1 parça ince çizik boyası vardır. Makyajlı kasadır, LED far mevcuttur.
+Airbag direk hepsi orjinaldir. Hasar kaydı toplam 25 bin TL'dir. İstenilen ustaya bakılır.`;
+
+const advert = LIDDetector.analyze(CLEAN_TITLE, ADVERT);
+const quote = advert.evidence[0].snippet;
+
+report(quote.includes('çizik') && quote.includes('boyası'),
+  "the quote keeps the seller's own Turkish spelling, not the folded form",
+  `got "${quote}"`);
+
+report(!/parca|boyasi|vardir/.test(quote),
+  'the folded matching form never reaches the screen',
+  `got "${quote}"`);
+
+report(quote.startsWith('Sadece') && quote.endsWith('vardır'),
+  'the quote is a whole sentence, not a window cut mid-word',
+  `got "${quote}"`);
+
+report(advert.evidence.every((e) => e.snippet.length <= LIDDetector.TUNING.SNIPPET_MAX + 2),
+  'a very long sentence is capped');
+
+// A single sentence longer than the cap must still be trimmed at spaces.
+const longOne = 'Aracın ' + 'çok güzel bakımlı temiz '.repeat(20) + 'ön kapısı boyalıdır';
+const longQuote = LIDDetector.analyze(CLEAN_TITLE, longOne).evidence[0].snippet;
+report(!/\w…|…\w/.test(longQuote) && longQuote.includes('boyalı'),
+  'a capped quote breaks on whitespace and still shows the match',
+  `got "${longQuote}"`);
+
 /* =========================================================================
  * 10. CORPUS HARVESTING
  *
